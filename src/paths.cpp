@@ -99,4 +99,9 @@ std::string DefaultOverlayDir(const GameInfo& game) {
     return user.empty() ? "overlay" : (user / "overlay").string();   // "overlay" only if SDL has no user dir
 }
 
+std::string DefaultConfigFile(const GameInfo& game) {
+    const fs::path user = UserDir(game);
+    return user.empty() ? "config.ini" : (user / "config.ini").string();
+}
+
 }  // namespace hlekit

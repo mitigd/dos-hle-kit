@@ -28,5 +28,6 @@ bool IsGameDir(const std::string& dir, const std::string& exeName);
 std::string FindGameDir(const GameInfo& game, std::string& how);
 void RememberGameDir(const GameInfo& game, const std::string& dir);
 std::string DefaultOverlayDir(const GameInfo& game);
+std::string DefaultConfigFile(const GameInfo& game);   // config.ini in the per-user directory
 
 }  // namespace hlekit

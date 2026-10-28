@@ -186,6 +186,8 @@ struct ScriptKey { double at; uint8_t scan; bool down, extended; bool mouse = fa
 
 int Main(int argc, char** argv, const GameInfo& game) {
     std::string image, png, keys, wav, dumpImage, functions = game.functionsCsv, cpuName, soundFont = game.soundFont;
+    std::string configFile;
+    std::map<std::string, std::string> setOptions;
     bool gameGiven = false, overlayGiven = false, mute = false, headless = false;
     std::vector<std::string> noSeams;
     double seconds = 0;
@@ -200,6 +202,13 @@ int Main(int argc, char** argv, const GameInfo& game) {
         if (a == "--game") { m.gameDir = next(); gameGiven = true; }
         else if (a == "--dump-image") dumpImage = next();
         else if (a == "--overlay") { m.overlayDir = next(); overlayGiven = true; }
+        else if (a == "--config") configFile = next();
+        else if (a == "--set") {
+            const std::string kv = next();
+            const auto eq = kv.find('=');
+            if (eq == std::string::npos) { std::cerr << "--set wants key=value\n"; return 2; }
+            setOptions[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
         else if (a == "--functions" || a == "--decomp") functions = next();
         else if (a == "--no-seam") noSeams.push_back(next());
         else if (a == "--headless") headless = true;
@@ -221,7 +230,7 @@ int Main(int argc, char** argv, const GameInfo& game) {
             printf("%s [EXE|IMAGE] [--game DIR] [--overlay DIR] [--functions CSV] [--no-seam NAME|AREA]\n"
                    "  [--headless --seconds N] [--keys T:KEY[+HELD]|T:lmb@X/Y,...] [--png F] [--wav F] [--mute]\n"
                    "  [--cpu kvm|whpx|jit] [--list-cpus] [--log-services] [--dump-image F] [--seams]\n"
-                   "  [--args \"GUEST ARGUMENTS\"] [--soundfont SF2]\n%s",
+                   "  [--args \"GUEST ARGUMENTS\"] [--soundfont SF2] [--config FILE] [--set KEY=VALUE]\n%s",
                    argv[0], game.argHelp.c_str());
             return 0;
         }
@@ -233,6 +242,8 @@ int Main(int argc, char** argv, const GameInfo& game) {
         else { std::cerr << "unknown argument " << a << "\n"; return 2; }
     }
     if (!overlayGiven) m.overlayDir = DefaultOverlayDir(game);
+    if (configFile.empty()) configFile = DefaultConfigFile(game);
+    m.config.Load(game.options, configFile, setOptions);
     std::string foundHow;
     if (image.empty() && !gameGiven) {
         m.gameDir = FindGameDir(game, foundHow);

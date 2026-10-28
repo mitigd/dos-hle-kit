@@ -187,6 +187,9 @@ public:
     Labels labels;
     std::unique_ptr<Dos> dos;
     std::string gameDir, fallbackGameDir, overlayDir;
+    Config config;                                                // GameInfo::options, loaded at start-up
+    std::string Option(const std::string& key) const { return config.Get(key); }
+    int OptionIndex(const std::string& key) const { return config.Index(key); }
     std::string commandLine;                                      // guest arguments (after argv[0])
     std::vector<std::string> dosDirAliases;
     HostFiles files{*this};                                       // sandboxed host files (overlay, game dir)

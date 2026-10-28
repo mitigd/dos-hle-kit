@@ -8,6 +8,8 @@
 // The rule: hardware is never emulated. Every function that touches hardware
 // is a seam; a port access that still happens is reported as an unseamed function and reads 0.
 #pragma once
+#include "hlekit/config.h"
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -60,6 +62,9 @@ struct GameInfo {
     // The seam table. A plain vector: compose it from as many modules/directories as the
     // project needs. The kit does not require one table, file or translation unit.
     SeamList seams;
+    // User options (language, ...): written to config.ini in the per-user directory with these
+    // defaults, read by seams through Machine::Option. See config.h.
+    std::vector<ConfigOption> options;
     // A host key event, XT set-1 make code; `extended` = the key sends an E0h prefix (grey
     // arrows, Insert/Delete/Home/End/PgUp/PgDn, right Ctrl/Alt, keypad Enter and /). Runs at an
     // interruptible point (guest IF=1), where the game's keyboard IRQ could have arrived: the
