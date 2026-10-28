@@ -22,6 +22,7 @@ hlekit_src = files(
   'src/frontend.cpp',
   'src/font.cpp',
   'src/files.cpp',
+  'src/paths.cpp',
   'src/jit/JitEngine/CompileBlock.cpp',
   'src/jit/JitEngine/Engine.cpp')
 

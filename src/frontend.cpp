@@ -6,6 +6,7 @@
 //        [--log-services] [--dump-image FILE] [--seams]
 #include "hlekit/decomp.h"
 #include "hlekit/machine.h"
+#include "hlekit/paths.h"
 #include "hlekit/phar286.h"
 #include "hlekit/seam.h"
 
@@ -185,7 +186,7 @@ struct ScriptKey { double at; uint8_t scan; bool down, extended; bool mouse = fa
 
 int Main(int argc, char** argv, const GameInfo& game) {
     std::string image, png, keys, wav, dumpImage, functions = game.functionsCsv, cpuName, soundFont = game.soundFont;
-    bool gameGiven = false, mute = false, headless = false;
+    bool gameGiven = false, overlayGiven = false, mute = false, headless = false;
     std::vector<std::string> noSeams;
     double seconds = 0;
     Machine m;
@@ -193,13 +194,12 @@ int Main(int argc, char** argv, const GameInfo& game) {
     m.fallbackGameDir = game.fallbackGameDir;
     m.dosDirAliases = game.dosDirAliases;
     m.commandLine = game.commandLine;
-    m.overlayDir = "overlay";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--game") { m.gameDir = next(); gameGiven = true; }
         else if (a == "--dump-image") dumpImage = next();
-        else if (a == "--overlay") m.overlayDir = next();
+        else if (a == "--overlay") { m.overlayDir = next(); overlayGiven = true; }
         else if (a == "--functions" || a == "--decomp") functions = next();
         else if (a == "--no-seam") noSeams.push_back(next());
         else if (a == "--headless") headless = true;
@@ -231,6 +231,20 @@ int Main(int argc, char** argv, const GameInfo& game) {
             return 0;
         } else if (a[0] != '-' && image.empty()) image = a;
         else { std::cerr << "unknown argument " << a << "\n"; return 2; }
+    }
+    if (!overlayGiven) m.overlayDir = DefaultOverlayDir(game);
+    std::string foundHow;
+    if (image.empty() && !gameGiven) {
+        m.gameDir = FindGameDir(game, foundHow);
+        if (m.gameDir.empty()) {
+            const std::string msg = "Cannot find the game files (" + game.exeName + ").\n\n"
+                "Run once with   --game /path/to/the/game/folder   and it is remembered, or set\n"
+                "HLEKIT_GAME_DIR, or put the game folder next to this program.\n"
+                "The original game is not included.";
+            std::cerr << game.title << ": " << msg << "\n";
+            if (!headless) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, game.title.c_str(), msg.c_str(), nullptr);
+            return 1;
+        }
     }
     if (image.empty()) image = m.gameDir + "/" + game.exeName;
     if (!gameGiven && image.size() > 4) {
@@ -281,6 +295,7 @@ int Main(int argc, char** argv, const GameInfo& game) {
     m.loadHigh = game.loadHigh;
     if (!m.vm.Create(cpuName, err) || !m.Load(image, err)) { std::cerr << err << "\n"; return 1; }
     if (m.loadHigh) m.labels.Remap([&m](uint32_t a) { return m.Data(a); });
+    if (foundHow != "remembered" && IsGameDir(m.gameDir, game.exeName)) RememberGameDir(game, m.gameDir);
     fprintf(stderr, "[cpu] %s\n", m.vm.Backend().c_str());
     if (!game.mapFile.empty() && !m.LoadMap(game.mapFile)) std::cerr << "note: no labels from " << game.mapFile << "\n";
     else if (m.segmented) m.labels.Sort();

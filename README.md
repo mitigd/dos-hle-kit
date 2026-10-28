@@ -286,8 +286,8 @@ faithful, and it is printed by `--seams`.
 ```text
 build/mygame-hle [EXE|IMAGE] [options]
 
---game DIR              game data directory
---overlay DIR           writable overlay (default: ./overlay)
+--game DIR              game data directory (remembered for the next start)
+--overlay DIR           writable overlay (default: "overlay" in the per-user data directory)
 --functions CSV         function labels: address,name[,size] (hex addresses)
 --decomp CSV            alias for --functions
 --seams                 print the seam table and exit
