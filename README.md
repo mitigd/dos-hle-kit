@@ -16,7 +16,7 @@ still reaches the CPU is reported as an unseamed function instead of being silen
 | Area | Provided |
 | :-- | :-- |
 | CPU | KVM on Linux; portable AsmJit JIT; one `Vcpu` interface for both |
-| Loaders | runtime: LE (DOS/4GW), NE (Phar Lap 286), AHLEIMG; analysis: COM, MZ, NE, LE, LX |
+| Loaders | runtime: LE (DOS/4GW), NE (Phar Lap 286), real-mode MZ/COM, AHLEIMG; analysis: COM, MZ, NE, LE, LX |
 | DOS services | `int 21h`, `int 31h` (DPMI), `int 10h`, PSP, environment, overlay files, real-mode calls |
 | Guest control | registers, guest memory, segment/descriptor helpers, guest function calls |
 | Hardware seams | native replacement functions with the original call/return convention |
@@ -26,6 +26,12 @@ still reaches the CPU is reported as an unseamed function instead of being silen
 
 The kit is a static library. A game project supplies one `GameInfo` with its seam table and
 native handlers; it does not fork the CPU, loader or frontend.
+
+## Games ported with the kit
+
+| Game | Project | Notes |
+| :-- | :-- | :-- |
+| *Gold Rush* | [gr-hle](https://github.com/mitigd/gr-hle) | real-mode MZ; seams for the hardware its interpreter touches. The worked example: read it end to end before starting, it is the layout below with real seams in it |
 
 ## Requirements
 
@@ -79,6 +85,8 @@ python3 tools/scaffold/new_game.py mygame /path/to/GAME.EXE --functions my_funct
 
 Read the `[hw] unseamed hardware access` lines from the run, then turn each reported function
 into a seam in `src/game.cpp`. Repeat until the report is empty on the paths you care about.
+The [games ported with the kit](#games-ported-with-the-kit) are that process carried through to
+something that runs, and the best reference for what a finished seam table looks like.
 
 ### Analysis backends
 
@@ -174,7 +182,8 @@ reads the executable; Ghidra projects are temporary unless `--keep-ghidra-projec
 
 Runtime loader support is a separate question: `Machine::Load` runs **LE**, **NE**, real-mode **MZ**
 and **COM** images (plus the kit's AHLEIMG dump format). Real-mode programs get no DOS and no BIOS:
-every interrupt a game would make is a function you replace with a seam (see `gr-hle`), and native
+every interrupt a game would make is a function you replace with a seam (see
+[gr-hle](https://github.com/mitigd/gr-hle), which does exactly that), and native
 code can call game functions back with `Machine::CallGuestNear16`. They run on `kvm` and on the
 portable `jit` (`--cpu jit`); `tools/test/vcpu_diff` checks the JIT against KVM.
 
@@ -361,19 +370,25 @@ See the CPU backend notes in `include/hlekit/vcpu.h` for the register/exit contr
 ## Repository layout
 
 ```text
-include/hlekit/   public API: seam.h, machine.h, vm.h, vcpu.h, dos.h, le.h, ne.h,
-                  phar286.h, audio.h, midi.h
-src/              machine, Vm, DOS/DPMI services, LE/NE loaders, audio/MIDI, frontend
+include/hlekit/   public API: seam.h, machine.h, vm.h, vcpu.h, dos.h, le.h, ne.h, phar286.h,
+                  audio.h, midi.h, files.h (host files for seams), font.h, paths.h
+src/              machine, Vm, DOS/DPMI services, LE/NE loaders, audio/MIDI, frontend,
+                  host files, fonts, game-directory resolution
 src/jit/          portable x86-64 JIT compiler and translation cache
 third_party/      vendored Zydis and AsmJit (with their licenses)
+data/fonts/       the kit's 8x8 and 8x16 faces, as text; embedded into the library
+                  by tools/embed_text.py
 tools/            analysis/ (seam discovery and ranking, Watcom debug info), scaffold/
                   (new_game.py), decomp/ (gen_decomp.py), ghidra/ (export + Java scripts),
-                  debug/ (gdb_run.py), lib/ (DOS image loader); see tools/README.md
+                  debug/ (gdb_run.py), lib/ (DOS image loader), font/ (derive16.py),
+                  test/vcpu_diff/ (JIT against KVM); see tools/README.md
 template/         game-project skeleton copied by new_game.py (src/seams/, src/decompiled/)
 ```
 
 ## Documentation
 
+- [gr-hle](https://github.com/mitigd/gr-hle) — *Gold Rush* ported through the kit; the reference
+  project to read first
 - [tools/README.md](tools/README.md) — every tool in `tools/`, with usage and options
 - [template/docs/project.md](template/docs/project.md) — what a generated game project looks like
 
