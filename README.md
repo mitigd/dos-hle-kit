@@ -1,9 +1,9 @@
 # dos-hle-kit
 
-**A framework for function-level HLE (high-level emulation) of 32-bit DOS games.**
+**A framework for function-level HLE (high-level emulation) of 16- and 32-bit DOS games.**
 
-Run the original executable and replace only the functions that touch hardware — video, sound,
-input, timing, and the DOS extender — with native code. Game logic, renderers, mixers and data
+Run the original executable and replace only the functions that touch hardware (video, sound,
+input, timing, and the DOS extender) with native code. Game logic, renderers, mixers and data
 stay in the original binary. The CPU still executes the original instructions; the kit provides
 the OS services, the memory map, the hardware seams and the host frontend around it.
 
@@ -29,13 +29,13 @@ native handlers; it does not fork the CPU, loader or frontend.
 
 ## Games ported with the kit
 
-| Game | Project | Notes |
-| :-- | :-- | :-- |
-| *Gold Rush* | [gr-hle](https://github.com/mitigd/gr-hle) | real-mode MZ; seams for the hardware its interpreter touches. The worked example: read it end to end before starting, it is the layout below with real seams in it |
+| Game | Project | Guest | Notes |
+| :-- | :-- | :-- | :-- |
+| *Gold Rush* | [gr-hle](https://github.com/mitigd/gr-hle) | 16-bit real mode (MZ) | seams for the hardware its AGI interpreter touches. The worked example: read it end to end before starting, it is the layout below with real seams in it |
 
 ## Requirements
 
-- Linux for the KVM backend (`/dev/kvm` must be available) — the current default
+- Linux for the KVM backend (`/dev/kvm` must be available), the current default
 - A C++20 compiler and C11 compiler
 - Meson and Ninja
 - SDL2 and zlib
@@ -287,7 +287,7 @@ concatenate them in `seams::All()`. See
 
 A seam is `{address, name, area, doc, function, pop, ret}`. It replaces the function entry with
 a trap byte; the runner executes the native body and performs the original return (`ret` or
-`ret N`). Put the decomp and disassembly evidence in `doc` — it is the reason the seam is
+`ret N`). Put the decomp and disassembly evidence in `doc`; it is the reason the seam is
 faithful, and it is printed by `--seams`.
 
 ## Runner options
@@ -307,7 +307,7 @@ build/mygame-hle [EXE|IMAGE] [options]
 --wav FILE              write mixed audio
 --keys SPEC             scripted input, e.g. "1.5:enter,3:down+2.5"
 --mute                  run without audio output
---cpu NAME              kvm, jit, whpx (if built) — or set HLEKIT_CPU
+--cpu NAME              kvm, jit, whpx (if built), or set HLEKIT_CPU
 --list-cpus             list the backends this build can create
 --args "..."            guest command line
 --soundfont FILE        General MIDI SoundFont for music seams
@@ -387,10 +387,10 @@ template/         game-project skeleton copied by new_game.py (src/seams/, src/d
 
 ## Documentation
 
-- [gr-hle](https://github.com/mitigd/gr-hle) — *Gold Rush* ported through the kit; the reference
+- [gr-hle](https://github.com/mitigd/gr-hle): *Gold Rush* ported through the kit; the reference
   project to read first
-- [tools/README.md](tools/README.md) — every tool in `tools/`, with usage and options
-- [template/docs/project.md](template/docs/project.md) — what a generated game project looks like
+- [tools/README.md](tools/README.md): every tool in `tools/`, with usage and options
+- [template/docs/project.md](template/docs/project.md): what a generated game project looks like
 
 ## Licensing
 
@@ -398,5 +398,5 @@ dos-hle-kit is released under the MIT License; see [LICENSE](LICENSE).
 
 The vendored components keep their upstream licenses:
 
-- Zydis / Zycore — MIT (see `third_party/zydis/LICENSE`)
-- AsmJit — zlib (see `third_party/asmjit/LICENSE.md`)
+- Zydis / Zycore: MIT (see `third_party/zydis/LICENSE`)
+- AsmJit: zlib (see `third_party/asmjit/LICENSE.md`)
