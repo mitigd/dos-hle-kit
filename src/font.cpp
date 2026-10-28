@@ -24,7 +24,9 @@ bool Font::Parse(const std::string& text, Font& out, std::string& err) {
             if (height < 1 || height > 32) { err = "bad font height"; return false; }
             data->assign((size_t)256 * height, 0);
         } else if (line.rfind("@ ", 0) == 0 && line.size() >= 3) {
-            ch = (uint8_t)line[2];
+            // "@ A" or, for codes with no printable form, "@ 0x1a"
+            ch = line.rfind("@ 0x", 0) == 0 && line.size() > 4 ? (int)strtol(line.c_str() + 4, nullptr, 16) & 0xff
+                                                                 : (uint8_t)line[2];
             row = 0;
         } else if (ch >= 0 && height && row < height) {
             uint8_t bits = 0;
