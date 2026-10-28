@@ -1,0 +1,10 @@
+build/
+overlay/
+/docs/
+*.wav
+*.png
+*.img
+
+__pycache__/
+*.pyc
+compile_commands.json
