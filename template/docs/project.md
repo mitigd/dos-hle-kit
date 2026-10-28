@@ -9,7 +9,7 @@ only wires the modules together.
 
 | | |
 | :-- | :-- |
-| Game directory | `@GAMEDIR@` (never written: writes go to `overlay/`) |
+| Game directory | Not compiled in: found at startup by `--game DIR` (or an EXE path), `$HLEKIT_GAME_DIR`, the remembered directory, or next to the program (never written: writes go to the overlay) |
 | Function labels | `@FUNCTIONSCSV_DOC@` (optional CSV: address,name,size) |
 | Seam candidates | [seam-candidates.md](seam-candidates.md) (generated from the executable) |
 | Ranked candidates | [ranked-seams.md](ranked-seams.md) (heuristic video/sound/timing/input ranking) |

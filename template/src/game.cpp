@@ -14,7 +14,6 @@ int main(int argc, char** argv) {
     GameInfo g;
     g.title = "@NAME@-hle";
     g.exeName = "@EXENAME@";
-    g.gameDir = "@GAMEDIR@";
     g.functionsCsv = "@FUNCTIONSCSV@";   // optional: address,name,size labels from any decompiler
     g.seams = game::seams::All();
 
