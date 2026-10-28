@@ -3,6 +3,7 @@
 // is emulated: any port access that still happens is reported as an unseamed function.
 #pragma once
 #include "hlekit/audio.h"
+#include "hlekit/files.h"
 #include "hlekit/midi.h"
 #include "hlekit/seam.h"
 #include "hlekit/vm.h"
@@ -188,6 +189,7 @@ public:
     std::string gameDir, fallbackGameDir, overlayDir;
     std::string commandLine;                                      // guest arguments (after argv[0])
     std::vector<std::string> dosDirAliases;
+    HostFiles files{*this};                                       // sandboxed host files (overlay, game dir)
     bool logServices = false;
     bool loadHigh = false;                                        // LE: all objects above 1 MB (GameInfo::loadHigh)
 

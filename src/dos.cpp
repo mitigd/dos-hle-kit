@@ -43,59 +43,6 @@ std::string Lower(std::string s) {
     return s;
 }
 
-// "C:\LEVELS\X.LEV" -> "LEVELS/X.LEV"
-std::string Normalise(std::string p) {
-    std::replace(p.begin(), p.end(), '\\', '/');
-    if (p.size() > 1 && p[1] == ':') p = p.substr(2);
-    while (!p.empty() && p[0] == '/') p.erase(0, 1);
-    return p;
-}
-
-// A directory's entries by lower-case name, listed once. The game and fallback directories are
-// never written (writes go to the overlay), so a listing stays valid; on slow media (an exFAT SD
-// card) re-listing a directory for every missing file costs seconds.
-const std::map<std::string, fs::path>& Listing(const fs::path& dir) {
-    static std::map<std::string, std::map<std::string, fs::path>> cache;
-    auto it = cache.find(dir.string());
-    if (it != cache.end()) return it->second;
-    auto& names = cache[dir.string()];
-    std::error_code ec;
-    for (auto& e : fs::directory_iterator(dir, ec)) names[Lower(e.path().filename().string())] = e.path();
-    return names;
-}
-
-// Case-insensitive lookup below `root`; empty if a component does not exist.
-std::string FindCi(const std::string& root, const std::string& rel) {
-    fs::path cur = root;
-    size_t start = 0;
-    while (start <= rel.size()) {
-        size_t end = rel.find('/', start);
-        std::string part = rel.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (!part.empty() && part != ".") {
-            const auto& names = Listing(cur);
-            auto hit = names.find(Lower(part));
-            if (hit == names.end()) return {};
-            cur = hit->second;
-        }
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return cur.string();
-}
-
-bool Match83(const std::string& name, const std::string& pattern) {
-    // DOS wildcard match on the upper-cased name: '*' and '?'.
-    std::string n = Lower(name), p = Lower(pattern);
-    size_t i = 0, j = 0, star = std::string::npos, mark = 0;
-    while (i < n.size()) {
-        if (j < p.size() && (p[j] == '?' || p[j] == n[i])) { ++i; ++j; }
-        else if (j < p.size() && p[j] == '*') { star = j++; mark = i; }
-        else if (star != std::string::npos) { j = star + 1; i = ++mark; }
-        else return false;
-    }
-    while (j < p.size() && (p[j] == '*' || p[j] == '.')) ++j;
-    return j == p.size();
-}
 }  // namespace
 
 Dos::Dos(Machine& m) : m_(m), dta_(Vm::kPsp + 0x80), dtaSel_(Vm::kDataSel),
@@ -126,39 +73,9 @@ void Dos::Fail(uint16_t code) {
     m_.SetFrameFlag(0x1, true);
 }
 
-std::string Dos::GuestPath(uint32_t addr) {
-    std::string path = Normalise(m_.vm.CStr(addr, 128));
-    for (const std::string& entry : m_.dosDirAliases) {
-        const std::string alias = Lower(entry);
-        const std::string lower = Lower(path);
-        if (lower == alias) { path.clear(); break; }
-        if (lower.rfind(alias + "/", 0) == 0) {
-            path.erase(0, alias.size() + 1);
-            break;
-        }
-    }
-    return path;
-}
+std::string Dos::GuestPath(uint32_t addr) { return m_.files.GuestRel(addr); }
 
-std::string Dos::Resolve(const std::string& rel, bool forWrite) {
-    fs::path ov = fs::path(m_.overlayDir) / Lower(rel);
-    std::error_code ec;
-    auto source = [&] {
-        std::string src = FindCi(m_.gameDir, rel);
-        if (src.empty() && !m_.fallbackGameDir.empty()) src = FindCi(m_.fallbackGameDir, rel);
-        return src;
-    };
-    if (forWrite) {
-        fs::create_directories(ov.parent_path(), ec);
-        if (!fs::exists(ov, ec)) {
-            const std::string src = source();
-            if (!src.empty() && fs::is_regular_file(src, ec)) fs::copy_file(src, ov, ec);
-        }
-        return ov.string();
-    }
-    if (fs::exists(ov, ec)) return ov.string();
-    return source();
-}
+std::string Dos::Resolve(const std::string& rel, bool forWrite) { return m_.files.Resolve(rel, forWrite); }
 
 uint32_t Dos::Alloc(uint32_t size, uint32_t align) {
     heap_ = (heap_ + align - 1) & ~(align - 1);
@@ -464,23 +381,7 @@ void Dos::Int21() {
             std::string dir = pat.find('/') == std::string::npos ? "" : pat.substr(0, pat.rfind('/'));
             std::string mask = pat.substr(pat.find('/') == std::string::npos ? 0 : pat.rfind('/') + 1);
             std::vector<Found> list;
-            std::map<std::string, Found> byName;            // overlay, install, then CD/source priority
-            std::vector<std::string> roots;
-            if (!m_.fallbackGameDir.empty()) roots.push_back(FindCi(m_.fallbackGameDir, dir));
-            roots.push_back(FindCi(m_.gameDir, dir));
-            roots.push_back((fs::path(m_.overlayDir) / Lower(dir)).string());
-            for (const std::string& root : roots) {
-                std::error_code ec;
-                if (root.empty() || !fs::is_directory(root, ec)) continue;
-                for (auto& e : fs::directory_iterator(root, ec)) {
-                    std::string n = e.path().filename().string();
-                    if (!Match83(n, mask)) continue;
-                    bool isDir = e.is_directory(ec);
-                    if (isDir && !(ecx & 0x10)) continue;
-                    byName[Lower(n)] = {n, isDir ? 0u : (uint32_t)e.file_size(ec), isDir};
-                }
-            }
-            for (auto& [k, f] : byName) list.push_back(f);
+            for (auto& e : m_.files.List(dir, mask, ecx & 0x10)) list.push_back({e.name, e.size, e.dir});
             log("findfirst " + pat + " -> " + std::to_string(list.size()));
             finds_[dta_] = {list, 0};
             if (list.empty()) return Fail(2);              // FindFirst: file not found
