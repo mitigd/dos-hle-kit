@@ -264,6 +264,8 @@ concatenate them in `seams::All()`. See
 | `CallGuestCdecl(fn, {args})` | the same for cdecl / Watcom `-3s` stack arguments |
 | `CallGuestFar(sel, off, iretFrame)` | far call, optionally with an interrupt frame |
 | `CallGuestFar16(...)` | NE far function with word arguments |
+| `CallGuestNear16(fn, {args}, ds)` | real-mode near cdecl call back into the game from a seam |
+| `ResolveFont(m, req)`, `TextSurface` | `hlekit/font.h`: glyphs for text a game used to get from the BIOS (the game's own font in guest memory, else a project `.fnt`, else the kit's 8x8/8x16 by mode) and 8-pixel cells drawn on the frame. Fonts are data: `data/fonts/*.fnt` |
 | `Post(task)` | run a native ISR body where the guest has `IF=1` |
 | `SetTimer(hz, task)` | periodic IRQ 0 replacement with coalescing |
 | `WaitUntil(t)` | replace a busy-wait without blocking interrupt tasks |

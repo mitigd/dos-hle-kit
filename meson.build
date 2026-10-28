@@ -20,8 +20,17 @@ hlekit_src = files(
   'src/audio.cpp',
   'src/midi.cpp',
   'src/frontend.cpp',
+  'src/font.cpp',
   'src/jit/JitEngine/CompileBlock.cpp',
   'src/jit/JitEngine/Engine.cpp')
+
+# Fonts are data (data/fonts/*.fnt); they are embedded into the library as text.
+embedded_fonts = custom_target('embedded_fonts',
+  input : ['data/fonts/hlekit-8x8.fnt', 'data/fonts/hlekit-8x16.fnt'],
+  output : 'embedded_fonts.cpp',
+  command : [find_program('python3'), files('tools/embed_text.py'), '@OUTPUT@',
+             'kFont8x8=@INPUT0@', 'kFont8x16=@INPUT1@'])
+hlekit_src += embedded_fonts
 
 hlekit_args = ['-DHLEKIT_HAVE_JIT']
 hlekit_inc = [include_directories('include', 'src/jit',
