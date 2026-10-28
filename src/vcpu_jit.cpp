@@ -15,6 +15,11 @@
 //
 // The guest is flat 32-bit (DOS/4GW): isNE/isMZ are false, which selects CompileBlock's flat
 // protected-mode paths. NE/Phar Lap (16-bit, ring 3) is not covered yet and is reported.
+//
+// Real-mode (MZ/COM) guests turn on the compiler's isMZ paths (16-bit decode, segment * 16
+// addressing). The engine keeps EIP as a *linear* address there, while the kit's CpuState holds the
+// 16-bit IP and a separate CS base, so the two are converted at every sync; software interrupts go
+// through the IVT with a 16-bit IP/CS/FLAGS frame instead of an IDT gate.
 #include "hlekit/vcpu.h"
 
 #include "jit/JitEngine.h"
@@ -72,6 +77,13 @@ public:
     uint8_t* Ram() override { return mem_; }
     CpuState& State() override { return state_; }
     void Touch() override { /* RunOnce re-syncs unconditionally */ }
+
+    bool SetRealMode(std::string&) override {
+        real_ = true;
+        jit_.isMZ = true;
+        jit_.isNE = false;
+        return true;
+    }
 
     bool Init(std::string& err) override {
         // Page-aligned (and zeroed): pages holding translated code are write-protected.
@@ -216,10 +228,12 @@ private:
         c.esp = state_.reg[(int)Reg::Esp];
         c.eip = state_.reg[(int)Reg::Eip];
         c.eflags = state_.reg[(int)Reg::Eflags];
+        c.df = (state_.reg[(int)Reg::Eflags] >> 10) & 1;       // DF lives in its own byte
         auto seg = [&](Seg s, uint16_t& sel, uint32_t& base) {
             sel = state_.seg[(int)s].sel;
             base = state_.seg[(int)s].base;
         };
+        if (real_) c.eip = state_.seg[(int)Seg::Cs].base + (state_.reg[(int)Reg::Eip] & 0xFFFF);   // linear
         seg(Seg::Cs, c.cs, c.csBase);
         seg(Seg::Ds, c.ds, c.dsBase);
         seg(Seg::Es, c.es, c.esBase);
@@ -239,8 +253,8 @@ private:
         state_.reg[(int)Reg::Edi] = c.edi;
         state_.reg[(int)Reg::Ebp] = c.ebp;
         state_.reg[(int)Reg::Esp] = c.esp;
-        state_.reg[(int)Reg::Eip] = c.eip;
-        state_.reg[(int)Reg::Eflags] = c.eflags;
+        state_.reg[(int)Reg::Eip] = real_ ? (c.eip - c.csBase) & 0xFFFF : c.eip;   // IP, not linear
+        state_.reg[(int)Reg::Eflags] = (c.eflags & ~0x400u) | ((uint32_t)(c.df & 1) << 10);
         auto seg = [&](Seg s, uint16_t sel, uint32_t base) {
             state_.seg[(int)s].sel = sel;
             state_.seg[(int)s].base = base;
@@ -268,6 +282,22 @@ private:
         auto& c = jit_.context;
         const uint8_t v = c.pendingInt;
         c.pendingInt = 0xFF;
+        if (real_) {                                // IVT entry: IP, CS words; frame IP, CS, FLAGS
+            const uint32_t ip = (c.eip - c.csBase) & 0xFFFF;
+            c.esp = (c.esp & ~0xFFFFu) | ((c.esp - 6) & 0xFFFF);
+            const uint32_t sp = c.ssBase + (c.esp & 0xFFFF);
+            Wr16(sp, (uint16_t)ip);
+            Wr16(sp + 2, c.cs);
+            Wr16(sp + 4, (uint16_t)((c.eflags & ~0x400u) | ((uint32_t)(c.df & 1) << 10)));
+            c.eflags &= ~0x300u;                    // IF and TF clear
+            uint16_t newIp = 0, newCs = 0;
+            memcpy(&newIp, mem_ + v * 4u, 2);
+            memcpy(&newCs, mem_ + v * 4u + 2, 2);
+            c.cs = newCs;
+            c.csBase = (uint32_t)newCs << 4;
+            c.eip = c.csBase + newIp;
+            return true;
+        }
         const uint32_t at = (uint32_t)state_.idtBase + v * 8u;
         uint64_t gate = 0;
         if (at + 8 > kRam) return err = "jit: IDT outside guest RAM", false;
@@ -285,7 +315,7 @@ private:
                 Wr16(c.ssBase + c.esp, (uint16_t)value);
             }
         };
-        push(c.eflags);
+        push((c.eflags & ~0x400u) | ((uint32_t)(c.df & 1) << 10));
         push(c.cs);
         push(c.eip);
         c.eflags &= ~0x4100u;                     // TF and NT clear for any gate
@@ -319,6 +349,7 @@ private:
     uint8_t* mem_ = nullptr;
     CpuState state_;
     JitEngine jit_;
+    bool real_ = false;
     bool profile_ = false;
     uint32_t profileRng_ = 0x9e3779b9u;
     friend void EipRingDump(const char*);

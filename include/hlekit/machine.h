@@ -136,7 +136,7 @@ public:
     double Seconds() const;
     bool IsCode(uint32_t addr) const;
 
-    // ---- real-mode (MZ/COM) programs, KVM only. The image is loaded and relocated at a fixed
+    // ---- real-mode (MZ/COM) programs (kvm and jit). The image is loaded and relocated at a fixed
     // segment (PSP at kRealPsp, image at PSP:0100h, so analysis addresses are linked addresses);
     // no DOS is emulated: software interrupts that reach a stub are reported as unseamed
     // functions, exactly like port I/O. Seams address code by those linked addresses (Data()).

@@ -172,9 +172,11 @@ The report lists every function with port I/O, `cli`/`sti`, software interrupts,
 functions whose address is stored in data (callbacks and interrupt handlers). The tool only
 reads the executable; Ghidra projects are temporary unless `--keep-ghidra-project` is used.
 
-Runtime loader support is a separate question: `Machine::Load` currently runs **LE** and **NE**
-images (plus the kit's AHLEIMG dump format). MZ/COM execution is not implemented yet; those
-formats are supported by the analysis tooling.
+Runtime loader support is a separate question: `Machine::Load` runs **LE**, **NE**, real-mode **MZ**
+and **COM** images (plus the kit's AHLEIMG dump format). Real-mode programs get no DOS and no BIOS:
+every interrupt a game would make is a function you replace with a seam (see `gr-hle`), and native
+code can call game functions back with `Machine::CallGuestNear16`. They run on `kvm` and on the
+portable `jit` (`--cpu jit`); `tools/test/vcpu_diff` checks the JIT against KVM.
 
 ## Using the kit directly
 
@@ -327,7 +329,7 @@ which engine is running.
 | Backend | Host | State |
 | :-- | :-- | :-- |
 | `kvm` | Linux | default; hardware-virtualised; recommended |
-| `jit` | Linux, any x86-64 host | experimental portable engine; no debugger support yet |
+| `jit` | Linux, any x86-64 host | experimental portable engine; no debugger support yet; runs 32-bit and real-mode (MZ/COM) guests |
 | `whpx` | Windows 10+ | planned |
 
 ```bash

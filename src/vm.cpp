@@ -166,7 +166,7 @@ void Vm::BuildRealTables() {
 
 bool Vm::EnterReal(uint16_t cs, uint16_t ip, uint16_t ss, uint16_t sp, uint16_t ds, uint16_t es, std::string& err) {
     if (!cpu_) return err = "no CPU backend", false;
-    if (backend_ != "kvm") return err = "real-mode programs need the kvm backend (--cpu kvm); " + backend_ + " runs 32-bit protected mode only", false;
+    if (!cpu_->SetRealMode(err)) return err = "real-mode programs: " + backend_ + ": " + err, false;
     CpuState& s = cpu_->State();
     s = CpuState{};
     s.seg[(int)Seg::Cs] = RealSeg(cs, true);

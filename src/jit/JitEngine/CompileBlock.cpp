@@ -1094,6 +1094,17 @@ void *JitEngine::CompileBlock(uint32_t startEip)
         }
     };
 
+    // The source segment of a string op (movs/cmps/lods): DS, or the override prefix.
+    auto stringSrcSegBaseOffset = [](const ZydisDecodedInstruction &ins) -> int
+    {
+        if (ins.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_CS) return offsetof(CpuContext, csBase);
+        if (ins.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_ES) return offsetof(CpuContext, esBase);
+        if (ins.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_SS) return offsetof(CpuContext, ssBase);
+        if (ins.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_FS) return offsetof(CpuContext, fsBase);
+        if (ins.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_GS) return offsetof(CpuContext, gsBase);
+        return offsetof(CpuContext, dsBase);
+    };
+
     auto resolveEffectiveAddressIntoR8 = [&](const ZydisDecodedOperandMem &mem) -> bool
     {
         a.mov(r8d, (uint32_t)mem.disp.value);
@@ -1541,15 +1552,11 @@ void *JitEngine::CompileBlock(uint32_t startEip)
             break;
 
         case ZYDIS_MNEMONIC_CLD:
-            a.mov(r8d, dword_ptr(r15, offsetof(CpuContext, eflags)));
-            a.and_(r8d, ~0x400); // Clear DF (bit 10)
-            a.mov(dword_ptr(r15, offsetof(CpuContext, eflags)), r8d);
+            a.mov(byte_ptr(r15, offsetof(CpuContext, df)), 0);
             break;
 
         case ZYDIS_MNEMONIC_STD:
-            a.mov(r8d, dword_ptr(r15, offsetof(CpuContext, eflags)));
-            a.or_(r8d, 0x400); // Set DF (bit 10)
-            a.mov(dword_ptr(r15, offsetof(CpuContext, eflags)), r8d);
+            a.mov(byte_ptr(r15, offsetof(CpuContext, df)), 1);
             break;
 
         case ZYDIS_MNEMONIC_NOP:
@@ -2671,6 +2678,18 @@ void *JitEngine::CompileBlock(uint32_t startEip)
         }
         break;
 
+        case ZYDIS_MNEMONIC_LAHF:
+            // AH = SF:ZF:0:AF:0:PF:1:CF, read from the host flags (which hold the guest's); the host
+            // flags must come out unchanged, so they are saved around the masking.
+            a.pushfq();
+            a.pushfq();
+            a.pop(r8);
+            a.and_(r8d, 0xD5);
+            a.or_(r8d, 2);
+            a.mov(byte_ptr(r15, offsetof(CpuContext, eax) + 1), r8b);
+            a.popfq();
+            break;
+
         case ZYDIS_MNEMONIC_FLDPI:
             emitFpuPush();
             a.mov(rax, (uint64_t)0x400921FB54442D18ULL); // PI as double
@@ -3166,7 +3185,10 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 }
                 else if (operands[0].size == 16)
                 {
-                    a.mov(r9w, word_ptr(r15, off));
+                    if (off == (int)offsetof(CpuContext, esp))
+                        a.lea(r9d, dword_ptr(r8d, (int)pushSize));   // push sp stores the value before the push
+                    else
+                        a.mov(r9w, word_ptr(r15, off));
                     if (pushSize == 4)
                     {
                         a.movzx(r9d, r9w);
@@ -3179,7 +3201,10 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 }
                 else
                 {
-                    a.mov(r9d, dword_ptr(r15, off));
+                    if (off == (int)offsetof(CpuContext, esp))
+                        a.lea(r9d, dword_ptr(r8d, (int)pushSize));
+                    else
+                        a.mov(r9d, dword_ptr(r15, off));
                     a.mov(dword_ptr(r10, 0), r9d);
                 }
             }
@@ -3436,6 +3461,19 @@ void *JitEngine::CompileBlock(uint32_t startEip)
         break;
 
         case ZYDIS_MNEMONIC_LEAVE:
+        if (isNE || isMZ)
+        {
+            // 16-bit LEAVE: SP = BP; BP = [SS:SP]; SP += 2 (the high words of EBP/ESP are kept)
+            a.movzx(r8d, word_ptr(r15, offsetof(CpuContext, ebp)));
+            a.mov(r11d, dword_ptr(r15, offsetof(CpuContext, ssBase)));
+            a.lea(r10, dword_ptr(r14, r8));
+            a.add(r10, r11);
+            a.mov(r9w, word_ptr(r10, 0));
+            a.mov(word_ptr(r15, offsetof(CpuContext, ebp)), r9w);
+            a.add(r8d, 2);
+            a.mov(word_ptr(r15, offsetof(CpuContext, esp)), r8w);
+        }
+        else
         {
             // LEAVE: Set ESP to EBP, then POP EBP
 
@@ -3955,7 +3993,16 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 int off = getRegOffset(operands[0].reg.value);
                 if (off != -1 && resolveEffectiveAddressIntoR8(operands[1].mem))
                 {
-                    a.mov(dword_ptr(r15, off), r8d);
+                    // A 16-bit destination takes the low word only (the rest of the register is kept);
+                    // real-mode 16-bit addressing wraps at 64 KB for a wider destination.
+                    if (operands[0].size == 16)
+                        a.mov(word_ptr(r15, off), r8w);
+                    else
+                    {
+                        if (isNE || isMZ)
+                            a.movzx(r8d, r8w);
+                        a.mov(dword_ptr(r15, off), r8d);
+                    }
                 }
                 else
                     return nullptr;
@@ -5996,7 +6043,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, eflags)));
 
                 Label dfSet = a.newLabel();
-                a.test(r9d, 0x400);
+                a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0);
                 a.jnz(dfSet);
 
                 // ============================================================
@@ -6005,7 +6052,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 Label loopStartInc = a.newLabel();
                 if (segmentedMode)
                 {
-                    a.mov(r8d, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                    a.mov(r8d, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
                     a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, esBase)));
                 }
 
@@ -6071,7 +6118,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 Label loopStartDec = a.newLabel();
                 if (segmentedMode)
                 {
-                    a.mov(r8d, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                    a.mov(r8d, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
                     a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, esBase)));
                 }
 
@@ -6162,7 +6209,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                     a.movzx(r11d, di);
                     if (segmentedMode)
                     {
-                        a.add(r10d, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                        a.add(r10d, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
                         a.add(r11d, dword_ptr(r15, offsetof(CpuContext, esBase)));
                     }
                 }
@@ -6192,7 +6239,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
 
                 Label dfSetNonRep = a.newLabel();
                 Label doneNonRep = a.newLabel();
-                a.test(r9d, 0x400);
+                a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0);
                 a.jnz(dfSetNonRep);
 
                 if (use16BitIndex)
@@ -6274,7 +6321,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
 
             // Load DF from EFLAGS
             a.mov(edx, dword_ptr(r15, offsetof(CpuContext, eflags)));
-            a.test(edx, 0x400); // DF bit
+            a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0); // DF bit
 
             Label dfSet = a.newLabel();
             a.jnz(dfSet);
@@ -6289,7 +6336,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 a.mov(r8d, esi);
                 if (segmentedMode)
                 {
-                    a.add(r8d, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                    a.add(r8d, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
                 }
                 // Load value from ES:EDI
                 a.mov(r9d, edi);
@@ -6353,7 +6400,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 a.mov(r8d, esi);
                 if (segmentedMode)
                 {
-                    a.add(r8d, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                    a.add(r8d, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
                 }
                 // Load value from ES:EDI
                 a.mov(r9d, edi);
@@ -6479,7 +6526,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
 
             // Load DF
             a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, eflags)));
-            a.test(r9d, 0x400);
+            a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0);
             Label dfSet = a.newLabel();
             a.jnz(dfSet);
 
@@ -6615,7 +6662,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
             {
                 a.movzx(esi, si);
                 if (segmentedMode)
-                    a.add(esi, dword_ptr(r15, offsetof(CpuContext, dsBase)));
+                    a.add(esi, dword_ptr(r15, stringSrcSegBaseOffset(instr)));
             }
 
             emitDosVramLatch(esi, (instr.mnemonic == ZYDIS_MNEMONIC_LODSB) ? 1
@@ -6645,7 +6692,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 Label dfSet = a.newLabel();
                 Label done = a.newLabel();
                 a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, eflags)));
-                a.test(r9d, 0x400); // Check DF
+                a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0); // Check DF
                 a.jnz(dfSet);
 
                 // DF=0: Increment
@@ -6740,7 +6787,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 Label dfSet = a.newLabel();
 
                 // Branch based on Direction Flag (DF is bit 10 / 0x400 of EFLAGS)
-                a.test(r8d, 0x400);
+                a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0);
                 a.jnz(dfSet);
 
                 // If 16-bit, load esBase into r8d to optimize the address calculation
@@ -6944,7 +6991,7 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                 // Update guest EDI register based on EFLAGS' DF (bit 10 / 0x400 of r9d)
                 Label dfSet = a.newLabel();
                 Label dfDone = a.newLabel();
-                a.test(r9d, 0x400);
+                a.cmp(byte_ptr(r15, offsetof(CpuContext, df)), 0);
                 a.jnz(dfSet);
 
                 // DF == 0 (Increment)
@@ -7424,6 +7471,11 @@ void *JitEngine::CompileBlock(uint32_t startEip)
                     a.mov(dword_ptr(r15, offsetof(CpuContext, eflags)), r11d);
                 }
                 a.mov(dword_ptr(r15, offsetof(CpuContext, esp)), r8d);
+                a.mov(r10d, r11d);                         // DF of the popped flags -> CpuContext::df
+                a.shr(r10d, 10);
+                a.and_(r10d, 1);
+                a.mov(byte_ptr(r15, offsetof(CpuContext, df)), r10b);
+                a.and_(r11d, ~0x400);                      // the host DF stays clear
                 // Restore flags to host CPU for conditional jumps
                 a.push(r11);
                 a.popfq();
@@ -9186,7 +9238,13 @@ void *JitEngine::CompileBlock(uint32_t startEip)
             // CpuContext's IF is the guest's own (CLI/STI/POPF/IRET maintain it and
             // flag publishes keep it), so push it as is: a pushfd/cli/popfd section
             // must come back with interrupts enabled.
+            a.pushfq();                                    // the merge below must not disturb the host flags
             a.mov(r8d, dword_ptr(r15, offsetof(CpuContext, eflags)));
+            a.movzx(r10d, byte_ptr(r15, offsetof(CpuContext, df)));
+            a.shl(r10d, 10);
+            a.and_(r8d, ~0x400);
+            a.or_(r8d, r10d);
+            a.popfq();
             a.mov(r9d, dword_ptr(r15, offsetof(CpuContext, esp)));
             if (isNE || isMZ || instr.mnemonic == ZYDIS_MNEMONIC_PUSHF)
             {
@@ -9227,6 +9285,12 @@ void *JitEngine::CompileBlock(uint32_t startEip)
             }
             a.mov(dword_ptr(r15, offsetof(CpuContext, eflags)), r8d);
             a.mov(dword_ptr(r15, offsetof(CpuContext, esp)), r9d);
+            a.pushfq();
+            a.mov(r10d, r8d);                              // DF of the popped word -> CpuContext::df
+            a.shr(r10d, 10);
+            a.and_(r10d, 1);
+            a.mov(byte_ptr(r15, offsetof(CpuContext, df)), r10b);
+            a.popfq();
         }
         break;
 

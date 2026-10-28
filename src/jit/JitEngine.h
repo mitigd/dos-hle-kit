@@ -40,6 +40,10 @@ public:
         uint64_t mmx[8];     // MMX registers, kept separate from the x87 stack
         uint8_t xmm[8][16];
         uint8_t pendingInt = 0xFF;
+        // The guest's direction flag. Generated code keeps the host DF clear (the C ABI requires it
+        // whenever it calls or returns to C++), and flag captures overwrite CpuContext::eflags with host
+        // flags, so std/cld/popf/iret keep DF here and the string ops read it from here.
+        uint8_t df = 0;
         uint8_t pendingIo = 0;
         uint16_t pendingIoPort = 0;
         uint8_t pendingIoWidth = 0;

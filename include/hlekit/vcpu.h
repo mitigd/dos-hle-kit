@@ -104,6 +104,11 @@ public:
     virtual void Kick() = 0;                           // any thread: leave RunOnce soon
     virtual void SetInterruptWindow(bool) {}           // "wake me when IF=1" hint (Kick does the rest)
     virtual bool SetDebug(uint32_t bp, bool step, uint32_t watch, std::string& err) = 0;
+
+    // Real-mode (MZ/COM) programs: called once before the first run, ahead of State() being set up
+    // as a real-mode CPU (16-bit IP/SP, segment base = selector << 4, interrupts through the IVT at 0).
+    // A backend that cannot run it says why.
+    virtual bool SetRealMode(std::string& err) { err = "this backend runs 32-bit protected mode only"; return false; }
     ExitInfo exit;
 
     // The guest wrote code through the host (a seam planted a trap byte, DOS loaded an overlay,

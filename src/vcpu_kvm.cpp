@@ -61,6 +61,7 @@ public:
     }
 
     const char* Name() const override { return "kvm"; }
+    bool SetRealMode(std::string&) override { return true; }
     uint8_t* Ram() override { return mem_; }
     CpuState& State() override { return state_; }
     void Touch() override { dirty_ = true; }
