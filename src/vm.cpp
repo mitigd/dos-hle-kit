@@ -132,7 +132,69 @@ void Vm::Set(Reg r, uint32_t v) {
 
 bool Vm::Is32(Seg s) { return cpu_->State().seg[(int)s].big; }
 
+// A real-mode segment register: base = selector << 4, 64 KB, present, DPL 0, 16-bit.
+static SegState RealSeg(uint16_t sel, bool code) {
+    SegState s;
+    s.sel = sel;
+    s.base = (uint32_t)sel << 4;
+    s.limit = 0xFFFF;
+    s.access = code ? 0x9B : 0x93;
+    return s;
+}
+
+void Vm::BuildRealTables() {
+    // Every IVT entry points at its `hlt; iret` stub (segment 0, below 64 KB): a software
+    // interrupt leaves through the trap byte with the 6-byte real-mode frame (IP, CS, FLAGS) on
+    // the guest stack, and the stub's iret returns. Hardware IRQ vectors point at the BIOS
+    // default handlers (what int 21h/35h hands out before the game hooks them).
+    for (uint32_t v = 0; v < 256; ++v) {
+        Wr8(kStubs + v * 2, Trap());
+        Wr8(kStubs + v * 2 + 1, 0xCF);
+        uint32_t off = kStubs + v * 2;
+        if (v >= 0x08 && v <= 0x0F) off = kBiosIrq + (v - 0x08) * 2;
+        if (v >= 0x70 && v <= 0x77) off = kBiosIrq + (v - 0x70 + 8) * 2;
+        Wr16(v * 4, (uint16_t)off);
+        Wr16(v * 4 + 2, 0);
+    }
+    Wr8(kCallReturn, Trap());
+    Wr8(kCallReturnIret, Trap());
+    for (uint32_t i = 0; i < 16; ++i) {
+        Wr8(kBiosIrq + i * 2, Trap());
+        Wr8(kBiosIrq + i * 2 + 1, 0xCF);
+    }
+}
+
+bool Vm::EnterReal(uint16_t cs, uint16_t ip, uint16_t ss, uint16_t sp, uint16_t ds, uint16_t es, std::string& err) {
+    if (!cpu_) return err = "no CPU backend", false;
+    if (backend_ != "kvm") return err = "real-mode programs need the kvm backend (--cpu kvm); " + backend_ + " runs 32-bit protected mode only", false;
+    CpuState& s = cpu_->State();
+    s = CpuState{};
+    s.seg[(int)Seg::Cs] = RealSeg(cs, true);
+    s.seg[(int)Seg::Ds] = RealSeg(ds, false);
+    s.seg[(int)Seg::Es] = RealSeg(es, false);
+    s.seg[(int)Seg::Fs] = RealSeg(0, false);
+    s.seg[(int)Seg::Gs] = RealSeg(0, false);
+    s.seg[(int)Seg::Ss] = RealSeg(ss, false);
+    s.idtBase = 0;
+    s.idtLimit = 0x3FF;
+    s.gdtBase = 0;
+    s.gdtLimit = 0;
+    s.cr0 = 0x30;                                        // ET NE: protected mode off
+    s.cr4 = 0;
+    s.efer = 0;
+    s.reg[(int)Reg::Eip] = ip;
+    s.reg[(int)Reg::Esp] = sp;
+    s.reg[(int)Reg::Eflags] = 0x202;
+    cpu_->Touch();
+    return true;
+}
+
 bool Vm::LoadSeg(Seg s, uint16_t sel) {
+    if (real) {
+        cpu_->State().seg[(int)s] = RealSeg(sel, s == Seg::Cs);
+        cpu_->Touch();
+        return true;
+    }
     cpu_->State().seg[(int)s] = SegFromDesc(sel, Desc(sel));
     cpu_->Touch();
     return true;

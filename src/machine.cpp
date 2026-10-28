@@ -155,12 +155,12 @@ bool Machine::Load(const std::string& path, std::string& err) {
     }
     std::string ext = path.size() > 4 ? path.substr(path.size() - 4) : "";
     for (auto& c : ext) c = (char)tolower((unsigned char)c);
-    if (ext == ".com" && !mz) return err = path + ": COM (real-mode) executable; runtime COM execution is not implemented yet (analysis: tools/analysis/find_seams.py)", false;
+    if (ext == ".com" && !mz) return LoadReal(path, err);
     const bool v2 = memcmp(magic, "AHLEIMG2", 8) == 0;
     if (!v2 && memcmp(magic, "AHLEIMG1", 8) != 0) {
         LeImage img;
         if (!LoadLe(path, Vm::kCodeSel, Vm::kDataSel, img, err, loadHigh)) {
-            if (mz) err = path + ": plain MZ (real-mode) executable; runtime MZ execution is not implemented yet (analysis: tools/analysis/find_seams.py)";
+            if (mz) return LoadReal(path, err);
             return false;
         }
         for (auto& r : img.regions) {
@@ -188,6 +188,53 @@ bool Machine::Load(const std::string& path, std::string& err) {
         regions.push_back({r[0], r[1], r[2], r[3]});
     }
     return Placed(err);
+}
+
+bool Machine::LoadReal(const std::string& path, std::string& err) {
+    // A real-mode COM or MZ: PSP segment kRealPsp, the image at PSP:0100h (COM) or relocated at
+    // PSP+10h (MZ). Nothing else is set up: no DOS memory arena, no environment.
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> f((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (f.size() < 2) return err = path + ": empty", false;
+    realMode = true;
+    vm.real = true;
+    const uint32_t pspLin = (uint32_t)kRealPsp << 4;
+    if (f[0] == 'M' && f[1] == 'Z') {
+        auto w = [&](size_t o) { return (uint32_t)(f[o] | f[o + 1] << 8); };
+        const uint32_t last = w(2), pages = w(4), nrel = w(6), hdr = w(8) * 16, relOff = w(0x18);
+        uint32_t size = (pages ? pages - 1 : 0) * 512 + (last ? last : 512);
+        if (!pages) size = 0;
+        size = std::min<uint32_t>(size, (uint32_t)f.size());
+        if (size < hdr) return err = path + ": bad MZ header", false;
+        const uint16_t loadSeg = kRealPsp + 0x10;
+        const uint32_t base = (uint32_t)loadSeg << 4;
+        if (!vm.Write(base, f.data() + hdr, size - hdr)) return err = "image outside guest RAM", false;
+        for (uint32_t i = 0; i < nrel; ++i) {
+            const size_t at = relOff + i * 4;
+            if (at + 4 > f.size()) break;
+            const uint32_t lin = base + w(at + 2) * 16 + w(at);
+            vm.Wr16(lin, (uint16_t)(vm.Rd16(lin) + loadSeg));
+        }
+        realCs_ = (uint16_t)(w(0x16) + loadSeg);
+        realIp_ = (uint16_t)w(0x14);
+        realSs_ = (uint16_t)(w(0x0E) + loadSeg);
+        realSp_ = (uint16_t)w(0x10);
+        // The region covers the whole 64 KB code segment, not just the image: overlays load into the
+        // rest of it, and seams on their entry points address it by linked address too.
+        regions.push_back({base, std::max<uint32_t>(size - hdr, 0x10000 - 0x100), 4u, 0x100});
+        fixups = nrel;
+    } else {
+        const uint32_t base = pspLin + 0x100;
+        if (!vm.Write(base, f.data(), (uint32_t)f.size())) return err = "image outside guest RAM", false;
+        realCs_ = realSs_ = kRealPsp;
+        realIp_ = 0x100;
+        realSp_ = 0xFFFE;
+        regions.push_back({base, (uint32_t)f.size(), 4u, 0x100});
+    }
+    entry = ((uint32_t)realCs_ << 4) + realIp_;
+    stack = ((uint32_t)realSs_ << 4) + realSp_;
+    dos->SetLayout(0x70000, 0x100000);
+    return true;
 }
 
 bool Machine::Placed(std::string& err) {
@@ -220,6 +267,24 @@ bool Machine::DumpImage(const std::string& path) {
 }
 
 bool Machine::Start(const std::string& programName, std::string& err) {
+    if (realMode) {
+        // The BIOS data area a PC leaves, a PSP with the command tail, and the CPU in real mode.
+        vm.BuildRealTables();
+        uint8_t psp[256] = {0xCD, 0x20};
+        const std::string tail = commandLine.empty() ? "" : " " + commandLine.substr(0, 125);
+        psp[0x80] = (uint8_t)tail.size();
+        memcpy(psp + 0x81, tail.data(), tail.size());
+        psp[0x81 + tail.size()] = 0x0D;
+        psp[2] = 0x00; psp[3] = 0xA0;                       // top of memory: A000h
+        vm.Write((uint32_t)kRealPsp << 4, psp, sizeof psp);
+        vm.Wr16(0x410, 0x0021);                             // equipment: colour adapter, one drive
+        vm.Wr16(0x413, 640);                                // conventional memory, KB
+        vm.Wr8(0xFFFFE, 0xFC);                              // BIOS model byte: AT
+        (void)programName;
+        if (!vm.EnterReal(realCs_, realIp_, realSs_, realSp_, kRealPsp, kRealPsp, err)) return false;
+        vm.Set(Reg::Eax, 0);
+        return true;
+    }
     vm.BuildTables();
     // PSP: int 20h, environment selector at 2Ch, command tail at 80h (" args\r"); environment:
     // strings, double NUL, count, program path (argv[0] for Watcom's cstrt386), then for OS/2-style
@@ -424,6 +489,12 @@ void Machine::Post(Task t) {
 }
 
 void Machine::SetFrameFlag(uint32_t bit, bool on) {
+    if (realMode) {                                         // real-mode frame: IP, CS, FLAGS words
+        const uint32_t a = StackAddr(4);
+        const uint16_t f = vm.Rd16(a);
+        vm.Wr16(a, on ? f | bit : f & ~bit);
+        return;
+    }
     // Our IDT gates are 32-bit, so the saved EFLAGS is at +8 for both caller widths.
     const uint32_t at = StackAddr(8);
     const uint32_t fl = vm.Rd32(at);
@@ -527,6 +598,43 @@ void Machine::CallGuestFar(uint16_t sel, uint32_t off, bool interruptFrame) {
     callReturned_ = false;
     vm.Restore(saved);
     vm.LoadSeg(Seg::Cs, Vm::kCodeSel);
+}
+
+uint32_t Machine::CallGuestNear16(uint32_t fn, std::initializer_list<uint16_t> args, uint16_t dataSeg) {
+    // The callee returns with a near `ret` into the current code segment, so the return address is
+    // a byte of that segment: the seam's own trap byte when called from a seam body, otherwise the
+    // interrupted instruction's first byte, patched with a trap for the duration of the call.
+    const CpuState saved = vm.State();
+    const uint32_t csBase = vm.SegBase(Seg::Cs);
+    const uint16_t savedDs = vm.GetSeg(Seg::Ds), savedEs = vm.GetSeg(Seg::Es);
+    const uint32_t retLin = seamAt_ ? seamAt_ : csBase + (uint16_t)vm.Get(Reg::Eip);
+    const uint8_t orig = vm.Rd8(retLin);
+    const uint32_t prevNear = nearRet_;
+    const bool wasHoldingTasks = holdTasks_;
+    holdTasks_ = true;
+    if (!seamAt_) vm.Wr8(retLin, vm.Trap());
+    nearRet_ = retLin;
+    uint16_t sp = (uint16_t)vm.Get(Reg::Esp) - 64;
+    const uint32_t ss = vm.SegBase(Seg::Ss);
+    sp -= (uint16_t)(2 * args.size());
+    uint32_t at = ss + sp;
+    for (uint16_t a : args) { vm.Wr16(at, a); at += 2; }
+    sp -= 2;
+    vm.Wr16(ss + sp, (uint16_t)(retLin - csBase));
+    SetSp(sp);
+    vm.Set(Reg::Eip, Data(fn) - csBase);
+    if (dataSeg) { vm.LoadSeg(Seg::Ds, dataSeg); vm.LoadSeg(Seg::Es, dataSeg); }
+    callReturned_ = false;
+    while (!stopping && !callReturned_) Step();
+    callReturned_ = false;
+    const uint32_t result = (uint32_t)vm.Get16(Reg::Edx) << 16 | vm.Get16(Reg::Eax);
+    vm.Restore(saved);
+    vm.LoadSeg(Seg::Ds, savedDs);
+    vm.LoadSeg(Seg::Es, savedEs);
+    if (!seamAt_) vm.Wr8(retLin, orig);
+    nearRet_ = prevNear;
+    holdTasks_ = wasHoldingTasks;
+    return result;
 }
 
 uint32_t Machine::CallGuestFar16(uint16_t sel, uint16_t off, uint16_t dataSel,
@@ -875,7 +983,7 @@ void Machine::Step() {
 void Machine::OnDebug() {
     // A breakpoint or one single step (HLEKIT_TRACE). The instruction at EIP has not run yet.
     std::string err;
-    const uint32_t eip = (segmented ? vm.SegBase(Seg::Cs) : 0) + vm.Get(Reg::Eip);
+    const uint32_t eip = CodeLinear();
     if (vm.ring3 && vm.Exit().exception == 3)              // int3: a ring-3 trap (seam, stub, return)
         return OnTrap((uint32_t)vm.Exit().pc, true);
     if (vm.watch && (vm.Exit().dr6 & 0x2) &&
@@ -916,7 +1024,7 @@ std::string Machine::TraceTail(size_t n) const {
 
 void Machine::OnHlt() {
     // hlt has retired: EIP is past it. Segmented programs: CS base + IP.
-    OnTrap((segmented ? vm.SegBase(Seg::Cs) : 0) + vm.Get(Reg::Eip) - 1, false);
+    OnTrap(CodeLinear() - 1, false);
 }
 
 void Machine::OnTrap(uint32_t at, bool atTrap) {
@@ -926,13 +1034,17 @@ void Machine::OnTrap(uint32_t at, bool atTrap) {
     if (at == Vm::kCallReturn || at == Vm::kCallReturnIret) { callReturned_ = true; return; }
     if (at >= Vm::kBiosIrq && at < Vm::kBiosIrq + 32) { past(); return BiosIrq((uint8_t)((at - Vm::kBiosIrq) / 2)); }
     if (at >= Vm::kStubs && at < Vm::kStubs + 512) { past(); return OnInt((uint8_t)((at - Vm::kStubs) / 2)); }
+    if (nearRet_ && at == nearRet_) { callReturned_ = true; return; }
     auto it = seams_.find(at);
     if (it != seams_.end()) {
         const Seam& s = *it->second;
         Count(std::string("seam ") + s.name);
+        const uint32_t prevSeamAt = seamAt_;
+        seamAt_ = at;
         s.fn(*this);
+        seamAt_ = prevSeamAt;
         if (stopping) return;
-        if (s.ret == Seam::Ret::Resume) { vm.Set(Reg::Eip, at + s.pop); return; }   // instruction seam
+        if (s.ret == Seam::Ret::Resume) { vm.Set(Reg::Eip, at + s.pop - (realMode ? vm.SegBase(Seg::Cs) : 0)); return; }   // instruction seam
         if (s.ret == Seam::Ret::Far16) {                    // retf N
             const uint32_t ra = StackAddr(0);
             const uint16_t ip = vm.Rd16(ra), cs = vm.Rd16(ra + 2);
@@ -957,8 +1069,38 @@ void Machine::OnTrap(uint32_t at, bool atTrap) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
+void Machine::InjectInterrupt(uint8_t v) {
+    uint16_t sp = (uint16_t)vm.Get(Reg::Esp);
+    const uint32_t ss = vm.SegBase(Seg::Ss);
+    sp -= 6;
+    vm.Wr16(ss + sp, (uint16_t)vm.Get(Reg::Eip));
+    vm.Wr16(ss + sp + 2, vm.GetSeg(Seg::Cs));
+    vm.Wr16(ss + sp + 4, (uint16_t)vm.Get(Reg::Eflags));
+    vm.Set(Reg::Esp, (vm.Get(Reg::Esp) & 0xFFFF0000u) | sp);
+    vm.Set(Reg::Eflags, vm.Get(Reg::Eflags) & ~0x300u);
+    vm.Set(Reg::Eip, vm.Rd16(v * 4u));
+    vm.LoadSeg(Seg::Cs, vm.Rd16(v * 4u + 2));
+}
+
 void Machine::OnInt(uint8_t v) {
     char buf[160];
+    if (realMode) {
+        // No DOS or BIOS is emulated: a software interrupt that reaches its default stub is a
+        // function that is not a seam yet. Report it once, with its caller, and return.
+        const uint32_t ra = (uint32_t)vm.SegBase(Seg::Ss) + (uint16_t)(vm.Get(Reg::Esp));
+        const uint32_t caller = ((uint32_t)vm.Rd16(ra + 2) << 4) + vm.Rd16(ra);
+        char key[96];
+        snprintf(key, sizeof key, "int %02x ah=%02x", v, (vm.Get(Reg::Eax) >> 8) & 0xFF);
+        const std::string where = labels.Of(Link(caller));
+        Count(std::string("unseamed ") + key + " from " + where.substr(0, where.find('+')));
+        if (!reported_[std::string(key) + where]) {
+            reported_[std::string(key) + where] = true;
+            std::cerr << "[sw] unseamed software interrupt: " << key << " ax=" << std::hex << vm.Get16(Reg::Eax)
+                      << " bx=" << vm.Get16(Reg::Ebx) << " cx=" << vm.Get16(Reg::Ecx) << " dx=" << vm.Get16(Reg::Edx)
+                      << std::dec << " from " << where << " (" << std::hex << caller << std::dec << ")\n";
+        }
+        return;
+    }
     switch (v) {
     case 0x21: return dos->Int21();
     case 0x31: return dos->Int31();
@@ -1056,7 +1198,7 @@ void Machine::OnIo() {
     // yet: report it once (with the decomp name of the function) and read 0.
     auto& io = vm.Exit();
     if (!io.out && io.data) memset(io.data, 0, (size_t)io.size * io.ioCount);   // no device: reads 0
-    std::string where = labels.Of((segmented ? vm.SegBase(Seg::Cs) : 0) + vm.Get(Reg::Eip));
+    std::string where = labels.Of(Link(CodeLinear()));
     // Often this is inside a runtime inp()/outp() leaf helper; the caller is the seam
     // candidate, so name the first code address near the top of the stack too.
     if (segmented) {                                        // a far return address: offset, code selector
@@ -1068,7 +1210,7 @@ void Machine::OnIo() {
                 break;
             }
         }
-    } else {
+    } else if (!realMode) {
         const uint32_t esp = vm.Get(Reg::Esp);
         for (uint32_t i = 0; i < 4; ++i) {
             const uint32_t ret = vm.Rd32(esp + i * 4);

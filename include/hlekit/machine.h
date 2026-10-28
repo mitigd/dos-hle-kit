@@ -79,6 +79,13 @@ public:
     uint32_t CallGuestFar16(uint16_t sel, uint16_t off, uint16_t dataSel = 0,
                             std::initializer_list<uint16_t> args = {});
 
+    // Real-mode (MZ/COM) programs: run a near cdecl function of the current code segment to
+    // completion from a seam or task and return its DX:AX. `fn` is the linked address, like a seam's;
+    // `args` are pushed right to left (first argument lowest, [bp+4] after `push bp`). All registers
+    // and segments are restored afterwards. `dataSeg` != 0 loads DS and ES with it for the call (a task
+    // running between instructions has no meaningful DS).
+    uint32_t CallGuestNear16(uint32_t fn, std::initializer_list<uint16_t> args = {}, uint16_t dataSeg = 0);
+
     // A periodic host timer: `t` is posted `hz` times a second. Like a PIC, ticks that arrive
     // while the previous one is still pending are coalesced. hz <= 0 stops it.
     void SetTimer(double hz, Task t);
@@ -128,6 +135,17 @@ public:
     void SetFrameFlag(uint32_t bit, bool on);                     // in a software-interrupt frame
     double Seconds() const;
     bool IsCode(uint32_t addr) const;
+
+    // ---- real-mode (MZ/COM) programs, KVM only. The image is loaded and relocated at a fixed
+    // segment (PSP at kRealPsp, image at PSP:0100h, so analysis addresses are linked addresses);
+    // no DOS is emulated: software interrupts that reach a stub are reported as unseamed
+    // functions, exactly like port I/O. Seams address code by those linked addresses (Data()).
+    static constexpr uint16_t kRealPsp = 0x1000;
+    bool realMode = false;
+    // Deliver hardware interrupt `v` to the game's handler (IVT) as the PIC would: push FLAGS, CS,
+    // IP, clear IF/TF, jump. Call from a Post task (the guest has IF=1 there).
+    void InjectInterrupt(uint8_t v);
+    uint16_t RealCs() const { return vm.GetSeg(Seg::Cs); }
 
     // ---- segmented (NE) programs: Phar Lap 286|DOS-Extender, 16-bit protected mode
     bool segmented = false;
@@ -191,6 +209,9 @@ public:
 private:
     bool Placed(std::string& err);
     bool LoadNe(const std::string& path, std::string& err);
+    bool LoadReal(const std::string& path, std::string& err);
+    uint16_t realCs_ = 0, realIp_ = 0, realSs_ = 0, realSp_ = 0;
+    uint32_t CodeLinear() { return ((segmented || realMode) ? vm.SegBase(Seg::Cs) : 0) + (realMode ? vm.Get(Reg::Eip) & 0xFFFF : vm.Get(Reg::Eip)); }
     std::vector<uint64_t> neDescs_;                               // installed after BuildTables
     std::vector<std::pair<uint16_t, uint64_t>> neExtraDescs_;
     uint16_t neCs_ = 0, neIp_ = 0, neSs_ = 0, neSp_ = 0, neDs_ = 0, neDsSize_ = 0;
@@ -209,6 +230,8 @@ private:
     std::map<std::string, bool> reported_;
     std::mutex stopMutex_;
     bool callReturned_ = false;
+    uint32_t seamAt_ = 0;          // linear address of the seam whose body is running
+    uint32_t nearRet_ = 0;         // linear return trap of a CallGuestNear16 in progress
     std::atomic<bool> soundRunning_{false}, soundDue_{false};
     double soundBufferSeconds_ = 0;
     int soundBytesPerSample_ = 1;

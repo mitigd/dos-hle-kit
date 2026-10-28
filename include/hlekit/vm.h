@@ -46,6 +46,12 @@ public:
     // LDTR = kLdtSel, an LDT descriptor over the GDT itself: programs that read and edit "their
     // LDT" (sldt + a mapped selector) edit the descriptors the CPU uses, TI=1 or not.
     bool EnterSegmented(uint16_t cs, uint16_t ip, uint16_t ss, uint16_t sp, uint16_t ds, uint16_t es, std::string& err);
+    // Real mode (DOS COM/MZ programs, KVM only): segment base = selector << 4, 64 KB limits,
+    // 16-bit code; the IVT at 0 points every vector at its `hlt; iret` stub (BuildRealTables).
+    bool real = false;
+    void BuildRealTables();
+    bool EnterReal(uint16_t cs, uint16_t ip, uint16_t ss, uint16_t sp, uint16_t ds, uint16_t es, std::string& err);
+    uint32_t RealLinear(uint16_t seg, uint16_t off) const { return ((uint32_t)seg << 4) + off; }
 
     // ---- memory (host memory; every write drops stale JIT translations)
     uint8_t* mem = nullptr;
