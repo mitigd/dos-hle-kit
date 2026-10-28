@@ -188,6 +188,7 @@ int Main(int argc, char** argv, const GameInfo& game) {
     std::string image, png, keys, wav, dumpImage, functions = game.functionsCsv, cpuName, soundFont = game.soundFont;
     std::string configFile;
     std::map<std::string, std::string> setOptions;
+    bool soundFontGiven = false;
     bool gameGiven = false, overlayGiven = false, mute = false, headless = false;
     std::vector<std::string> noSeams;
     double seconds = 0;
@@ -220,7 +221,7 @@ int Main(int argc, char** argv, const GameInfo& game) {
         else if (a == "--wav") wav = next();
         else if (a == "--cpu") cpuName = next();
         else if (a == "--args") m.commandLine = next();
-        else if (a == "--soundfont") soundFont = next();
+        else if (a == "--soundfont") { soundFont = next(); soundFontGiven = true; }
         else if (a == "--list-cpus") {
             for (const std::string& n : Vcpu::Available()) printf("%s%s\n", n.c_str(), n == Vcpu::Default() ? "  (default)" : "");
             return 0;
@@ -243,7 +244,15 @@ int Main(int argc, char** argv, const GameInfo& game) {
     }
     if (!overlayGiven) m.overlayDir = DefaultOverlayDir(game);
     if (configFile.empty()) configFile = DefaultConfigFile(game);
-    m.config.Load(game.options, configFile, setOptions);
+    {
+        // Options every kit game has, ahead of the port's own.
+        std::vector<ConfigOption> options = {
+            {"soundfont", "", "General MIDI SoundFont (.sf2) for music. Empty: GameInfo default, then $HLEKIT_SOUNDFONT / $SOUNDFONT.", {}},
+        };
+        options.insert(options.end(), game.options.begin(), game.options.end());
+        m.config.Load(options, configFile, setOptions);
+        if (!soundFontGiven && !m.config.Get("soundfont").empty()) soundFont = m.config.Get("soundfont");
+    }
     std::string foundHow;
     if (image.empty() && !gameGiven) {
         m.gameDir = FindGameDir(game, foundHow);

@@ -3,7 +3,8 @@
 // Support on macOS; see paths.h). A port lists its options in GameInfo::options; the kit writes
 // a commented config.ini with the defaults on first run, appends options added later, reads it at
 // start-up, and lets the command line override it for one run (--config FILE, --set key=value).
-// Seams read the result with Machine::Option / Machine::OptionIndex.
+// Seams read the result with Machine::Option / Machine::OptionIndex. The kit adds its own options
+// to every game's file (soundfont); the port lists only its own.
 //
 // File format: "key = value", '#' or ';' starts a comment line, unknown keys are reported and kept.
 #pragma once

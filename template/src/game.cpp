@@ -16,6 +16,10 @@ int main(int argc, char** argv) {
     g.exeName = "@EXENAME@";
     g.functionsCsv = "@FUNCTIONSCSV@";   // optional: address,name,size labels from any decompiler
     g.seams = game::seams::All();
+    // User options (language, ...): declared here, written with their defaults to config.ini in
+    // the per-user directory (SDL pref path) on first run, read by seams via Machine::Option().
+    // One-run override: --set key=value. Example:
+    // g.options = {{"language", "English", "Text language.", {"English", "French"}}};
 
     // Input callbacks are implemented in src/seams/input.cpp. Uncomment each one as the game's
     // handler is translated; setting onMouse also hides the host cursor.

@@ -269,6 +269,7 @@ void Dos::Int21() {
         std::string rel = GuestPath(ds(edx));
         const bool create = ah == 0x3C;
         const bool write = create || (al & 3) != 0;
+        if (rel.empty()) return Fail(3);                    // an empty path names nothing (it would resolve to a directory)
         std::string host = Resolve(rel, write);
         FILE* f = host.empty() ? nullptr : fopen(host.c_str(), create ? "w+b" : (write ? "r+b" : "rb"));
         log((create ? "create " : "open ") + rel + (f ? "" : " -> not found"));
