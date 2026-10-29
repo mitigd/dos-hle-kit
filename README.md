@@ -32,6 +32,7 @@ native handlers; it does not fork the CPU, loader or frontend.
 | Game | Project | Guest | Notes |
 | :-- | :-- | :-- | :-- |
 | *Gold Rush* | [gr-hle](https://github.com/mitigd/gr-hle) | 16-bit real mode (MZ) | seams for the hardware its AGI interpreter touches. The worked example: read it end to end before starting, it is the layout below with real seams in it |
+| *Little Big Adventure* | [lba-hle](https://github.com/mitigd/lba-hle) | 32-bit protected mode (LE) | seams for VESA setup and palette, the Miles AIL music API (XMIDI on a host synth), the wave driver stubs (native software mixer) and MSCDEX (no disc), plus widescreen room strips, direct controls and save anywhere |
 
 ## Requirements
 
@@ -389,6 +390,7 @@ template/         game-project skeleton copied by new_game.py (src/seams/, src/d
 
 - [gr-hle](https://github.com/mitigd/gr-hle): *Gold Rush* ported through the kit; the reference
   project to read first
+- [lba-hle](https://github.com/mitigd/lba-hle): *Little Big Adventure* ported through the kit
 - [tools/README.md](tools/README.md): every tool in `tools/`, with usage and options
 - [template/docs/project.md](template/docs/project.md): what a generated game project looks like
 
