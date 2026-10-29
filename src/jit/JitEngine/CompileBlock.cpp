@@ -6668,17 +6668,20 @@ void *JitEngine::CompileBlock(uint32_t startEip)
             emitDosVramLatch(esi, (instr.mnemonic == ZYDIS_MNEMONIC_LODSB) ? 1
                                  : (instr.mnemonic == ZYDIS_MNEMONIC_LODSW) ? 2 : 4);
 
+            // Operand size controls the load, address size controls the index.
+            // Initialize the full stride: byte/word LODS can still update ESI,
+            // so stale upper bits in r8 must not become part of that update.
             if (instr.mnemonic == ZYDIS_MNEMONIC_LODSB)
             {
                 a.mov(al, byte_ptr(r14, esi));
                 a.mov(byte_ptr(r15, offsetof(CpuContext, eax)), al);
-                a.mov(r8w, 1);
+                a.mov(r8d, 1);
             }
             else if (instr.mnemonic == ZYDIS_MNEMONIC_LODSW)
             {
                 a.mov(ax, word_ptr(r14, esi));
                 a.mov(word_ptr(r15, offsetof(CpuContext, eax)), ax);
-                a.mov(r8w, 2);
+                a.mov(r8d, 2);
             }
             else
             {
