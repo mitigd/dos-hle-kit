@@ -110,21 +110,27 @@ bool HostFiles::MatchMask(const std::string& name, const std::string& pattern) {
 
 std::vector<HostFiles::Entry> HostFiles::List(const std::string& dir, const std::string& mask, bool withDirs) {
     std::map<std::string, Entry> byName;   // fallback (CD/source), then install, then overlay: later wins
-    std::vector<std::string> roots;
-    if (!m_.fallbackGameDir.empty()) roots.push_back(FindCi(m_.fallbackGameDir, dir));
-    roots.push_back(FindCi(m_.gameDir, dir));
-    roots.push_back(OverlayPath(dir));
-    for (const std::string& root : roots) {
+    auto add = [&](const fs::path& p) {
+        std::error_code ec;
+        const std::string n = p.filename().string();
+        if (!MatchMask(n, mask)) return;
+        const bool isDir = fs::is_directory(p, ec);
+        if (isDir && !withDirs) return;
+        byName[Lower(n)] = {n, isDir ? 0u : (uint32_t)fs::file_size(p, ec), isDir};
+    };
+    // The game and fallback directories are never written, so their cached listing is reused instead
+    // of re-reading the directory on every find; the overlay, where saves are written, is listed live.
+    for (const std::string& base : {m_.fallbackGameDir, m_.gameDir}) {
+        if (base.empty()) continue;
+        const std::string root = FindCi(base, dir);
         std::error_code ec;
         if (root.empty() || !fs::is_directory(root, ec)) continue;
-        for (auto& e : fs::directory_iterator(root, ec)) {
-            const std::string n = e.path().filename().string();
-            if (!MatchMask(n, mask)) continue;
-            const bool isDir = e.is_directory(ec);
-            if (isDir && !withDirs) continue;
-            byName[Lower(n)] = {n, isDir ? 0u : (uint32_t)e.file_size(ec), isDir};
-        }
+        for (auto& [lower, path] : List(fs::path(root))) add(path);
     }
+    std::error_code ec;
+    const std::string overlay = OverlayPath(dir);
+    if (fs::is_directory(overlay, ec))
+        for (auto& e : fs::directory_iterator(overlay, ec)) add(e.path());
     std::vector<Entry> out;
     for (auto& [k, e] : byName) out.push_back(e);
     return out;
