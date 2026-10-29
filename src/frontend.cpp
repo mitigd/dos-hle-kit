@@ -105,11 +105,24 @@ SDL_Scancode ScancodeByName(const std::string& name) {
 }
 
 // The picture to show: a frame a seam composed (any width), else the mode-13h window at A0000h.
-void Frame(Machine& m, std::vector<uint32_t>& rgba, int& w, int& h, double& aspect) {
+// Returns false when `rgba` still holds exactly the picture it held last call (same seam frame,
+// same palette), so the caller can skip the texture upload.
+bool Frame(Machine& m, std::vector<uint32_t>& rgba, int& w, int& h, double& aspect) {
     uint8_t pal[768];
     {
         std::lock_guard<std::mutex> lock(m.paletteMutex);
         memcpy(pal, m.palette, sizeof pal);
+    }
+    static uint64_t lastSerial = 0;
+    static uint8_t lastPal[768];
+    static int lastW, lastH;
+    static double lastAspect;
+    const uint64_t serial = m.PresentedSerial();
+    if (serial && serial == lastSerial && !memcmp(pal, lastPal, sizeof pal) && !rgba.empty()) {
+        w = lastW;
+        h = lastH;
+        aspect = lastAspect;
+        return false;
     }
     uint32_t lut[256];
     for (int i = 0; i < 256; ++i) {
@@ -123,15 +136,22 @@ void Frame(Machine& m, std::vector<uint32_t>& rgba, int& w, int& h, double& aspe
         aspect = hf.aspect;
         rgba.resize((size_t)w * h);
         for (size_t i = 0; i < rgba.size(); ++i) rgba[i] = lut[hf.pixels[i]];
-        return;
+        lastSerial = hf.serial;
+        memcpy(lastPal, pal, sizeof pal);
+        lastW = w;
+        lastH = h;
+        lastAspect = aspect;
+        return true;
     }
+    lastSerial = 0;
     w = 320;
     h = 200;
     aspect = 0;
     rgba.resize(320 * 200);
-    if (m.videoMode != 0x13) { std::fill(rgba.begin(), rgba.end(), 0xFF000000u); return; }
+    if (m.videoMode != 0x13) { std::fill(rgba.begin(), rgba.end(), 0xFF000000u); return true; }
     const uint8_t* fb = m.vm.mem + 0xA0000;
     for (int i = 0; i < 320 * 200; ++i) rgba[i] = lut[fb[i]];
+    return true;
 }
 
 // VGA 320x200 fills a 4:3 screen: pixels are 5:6 (wider than tall would be 1:1). Keep that shape
@@ -532,14 +552,15 @@ int Main(int argc, char** argv, const GameInfo& game) {
             feedScript();
             int w, h;
             double aspect;
-            Frame(m, rgba, w, h, aspect);
+            bool changed = Frame(m, rgba, w, h, aspect);
             if (!tex || w != texW || h != texH) {
                 if (tex) SDL_DestroyTexture(tex);
                 tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
                 texW = w;
                 texH = h;
+                changed = true;
             }
-            SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
+            if (changed) SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
             int winW, winH;
             SDL_GetRendererOutputSize(ren, &winW, &winH);
             const SDL_Rect dst = Fit(winW, winH, w, h, aspect);

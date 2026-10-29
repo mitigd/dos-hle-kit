@@ -112,6 +112,8 @@ public:
     void ClearFrame();
     struct HostFrame { std::vector<uint8_t> pixels; int width = 0, height = 0; double aspect = 0; uint64_t serial = 0; };
     bool LatestFrame(HostFrame& out);
+    // Serial of the frame a seam is presenting, or 0 when none is (cheap: no pixel copy).
+    uint64_t PresentedSerial();
 
     // A native function the guest can call (driver tables, callbacks): returns its guest address,
     // a `hlt` stub that dispatches to `seam.fn` and returns like a seam (`ret seam.pop`).

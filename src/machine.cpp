@@ -719,6 +719,11 @@ bool Machine::LatestFrame(HostFrame& out) {
     return true;
 }
 
+uint64_t Machine::PresentedSerial() {
+    std::lock_guard<std::mutex> lock(frameMutex_);
+    return frameShown_ ? frame_.serial : 0;
+}
+
 void Machine::BiosIrq(uint8_t irq) {
     // What the BIOS's own handler would have done for a chained IRQ: IRQ 0 counts the tick at
     // 0040:006Ch (and the midnight flag at 0040:0070h after 1800B0h ticks). No device is touched.
