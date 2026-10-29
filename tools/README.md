@@ -15,11 +15,12 @@ tools/
     find_seams.py        hardware-surface report: every function that touches hardware
     rank_seams.py        the same functions ranked by replacement value, by area
     watcom_debug.py      the executable's own Watcom debug symbols and source modules
+    borland_debug.py     16-bit Borland TDINFO symbols to function CSV and decomp JSON
     find_debug_exes.py   scan a directory for executables that still carry debug info
   scaffold/
     new_game.py          create a game project from template/ and generate the first reports
   decomp/
-    gen_decomp.py        lay out and update a decompilation tree from Watcom symbols
+    gen_decomp.py        lay out and update a decompilation tree from debug-symbol JSON
   ghidra/
     ghidra_export.py     headless Ghidra -> functions CSV
     ExportFunctions.java, CreateFunctionsFromFixups.java   Ghidra scripts
@@ -108,13 +109,88 @@ python3 tools/analysis/watcom_debug.py GAME.EXE --json F.json         # everythi
 | `--json FILE` | write modules, functions with signatures, and data as JSON |
 
 Symbol addresses are linked addresses, so they match what a decompiler shows. Use the CSVs as
-`GameInfo::functionsCsv`, as `--functions` input, and as input to `gen_decomp.py`.
+`GameInfo::functionsCsv` and as `--functions` input. Use the JSON as input to `gen_decomp.py`.
+
+## analysis/borland_debug.py
+
+Extracts names, module code ranges, and function addresses from the packed 48-byte Borland
+TDINFO header (`FB 52`, versions 1.x–3.x) appended to a real-mode MZ executable. Uses only
+Python's standard library. It does not parse TD32 or NE/LE/LX debug information.
+
+```bash
+python3 tools/analysis/borland_debug.py GAME.EXE --functions F.csv --json debug.json
+python3 tools/analysis/borland_debug.py GAME.EXE --data D.csv --symbols all-symbols.csv --modules
+python3 tools/analysis/find_seams.py GAME.EXE --backend csv --functions F.csv
+python3 tools/decomp/gen_decomp.py --build original=debug.json --out src/decompiled
+```
+
+Function classification uses function types within module code ranges and scope entries. Locals, constants, register
+variables, and typedefs are excluded. `--symbols` also preserves unclassified public names;
+these may include data and linker labels, so this file is **not** a function table. Some shipped
+executables have only public names and yield no confidently identified functions. Detection
+alone does not imply that a usable function table can be recovered.
+
+Addresses use the kit's MZ convention: `0x100 + segment * 16 + offset`, including its PSP prefix.
+Other tools may load MZ images at a different base. Function sizes use matching scope lengths;
+otherwise they extend to the next function in the same segment or the containing module range's
+end. JSON records `size_source` as `scope`, `inferred`, or `unknown`; an unknown size is zero.
+Function candidates outside the MZ load image and function-typed names outside known code ranges
+are omitted from the function table with warnings and retained in `--symbols`. Overlay addresses
+are not resolved.
+
+The JSON also includes raw type slots and `signature_evidence` for each function: return type,
+function flags, scoped parameter names/types/locations, and locals. Repeated stack/register
+locations of a parameter are grouped together. This evidence is not a complete call signature:
+register locations can describe optimized copies rather than register argument passing, and
+missing parameter records do not prove that a function takes no arguments. By default,
+`params` remains null and `convention` remains unknown, so no wrappers are generated.
+
+After checking a function's argument layout, return instructions, and call sites, supply a
+complete signature with `--signatures signatures.json`. Keys are exact symbol names, or linked
+addresses such as `0x00006724` when names are ambiguous. For example:
+
+```json
+{
+  "_example": {
+    "convention": "cdecl16_far",
+    "params": [{"type": "int far*", "words": 2}, {"type": "int", "words": 1}],
+    "returns": "long",
+    "return_words": 2
+  }
+}
+```
+
+```bash
+python3 tools/analysis/borland_debug.py GAME.EXE --signatures signatures.json --json debug.json
+python3 tools/decomp/gen_decomp.py --build original=debug.json --out src/decompiled
+```
+
+Supported declarations are `cdecl16_near` and `cdecl16_far`, with an explicit parameter list
+(`[]` for zero parameters). Each parameter occupies one or two 16-bit stack words; two-word
+values, including far pointers, become separate `aN_lo`, `aN_hi` arguments in generated C++.
+These are guest words, not host pointers. `return_words` selects void (0), AX (1), or DX:AX (2).
+Only integer/pointer/void return ABIs are supported; floating-point and structure returns,
+variadic functions, Pascal argument order, and register calling conventions need manual work.
+Static visibility remains unknown.
+
+The generated `guest::` wrappers call `Machine::CallGuestNear16` or `CallGuestFar16`. Far wrappers
+preserve the original code segment and relocate it for the selected build. Near wrappers require
+the caller to be in the function's original code segment. The optional final `dataSeg` argument
+sets DS and ES for the call; zero preserves them. Supply a valid relocated data segment when
+calling from a task that has no meaningful DS. CPU registers and segments are restored afterward;
+guest memory changes persist.
+
+For declared 16-bit signatures, hand-written `native` bodies register with the correct near/far
+return, word argument offsets, and AX/DX:AX result. An empty native block produces an explicit
+compile error: 16-bit `guest::orig::`/`CallOriginal` fallback is not implemented. Write the body
+before enabling that translation. Existing Watcom generation is unchanged.
 
 ## analysis/find_debug_exes.py
 
 Scans a directory tree (or one file) for DOS executables carrying recognizable debug information:
 Watcom, Microsoft CodeView, Borland Turbo Debugger, DJGPP COFF symbol tables, and LE/LX header
-debug sections. Useful when deciding which build of a game is worth porting.
+debug sections. Useful when deciding which build of a game is worth porting. This is format
+detection; use `watcom_debug.py` or `borland_debug.py` to extract supported symbols.
 
 ```bash
 python3 tools/analysis/find_debug_exes.py /path/to/games

@@ -5,7 +5,11 @@
         --out src/decompiled --namespace cm
 
 Input: one JSON per executable build, written by `tools/analysis/watcom_debug.py GAME.EXE --json F`
-(functions with signatures, data, source modules). Several builds of one program (e.g. a lo-res
+or `tools/analysis/borland_debug.py GAME.EXE --json F`
+(functions, available signatures, data, source modules). Unknown signatures produce symbol and
+module blocks without callable wrappers. Explicit cdecl16_near/cdecl16_far signatures generate
+word-based wrappers; 16-bit native bodies must be supplied by hand (no original-call skeleton).
+Several builds of one program (e.g. a lo-res
 and a hi-res EXE) share one tree: functions and globals are paired by mangled name, and the
 build is chosen at run time (`<ns>::sym::Select(index)`, builds in command-line order).
 
@@ -88,30 +92,41 @@ class Fn:
         self.convention = f["convention"]
         self.cls = f["class"]
         self.size = f["size"]
+        self.return_words = f.get("return_words")
+        self.offset = {}
         self.addr = {}
         self.module = None
         self.id = None
+        if self.word_call:
+            if (type(f.get("offset")) is not int or not 0 <= f["offset"] <= 0xffff or
+                    (f["address"] - f["offset"]) % 16 or self.return_words not in (0, 1, 2)):
+                raise ValueError("16-bit signature needs a valid MZ offset and return_words: " + self.name)
+
+    @property
+    def word_call(self):
+        return self.convention in ("cdecl16_near", "cdecl16_far")
 
     @property
     def method(self):
         return bool(self.cls) and not self.name.startswith("vftable")
 
     def args(self):
-        """[(c name, type text)] as passed: `self` first for methods, a double takes two slots."""
+        """[(c name, type text)]; split into 16-bit words or 32-bit slots for the selected ABI."""
         if self.params is None:
             return None
         out = [("self", self.cls + "*")] if self.method else []
         for i, p in enumerate(self.params):
             if p["type"] == "...":
                 return None
-            if p["slots"] == 2:
+            slots = p["words"] if self.word_call else p["slots"]
+            if slots == 2:
                 out += [("a%d_lo" % i, p["type"] + " (low)"), ("a%d_hi" % i, p["type"] + " (high)")]
-            elif p["slots"] == 1:
+            elif slots == 1:
                 out.append(("a%d" % i, p["type"]))
         return out
 
     def callable(self):
-        return self.convention in ("watcom", "cdecl") and self.args() is not None
+        return (self.convention in ("watcom", "cdecl") or self.word_call) and self.args() is not None
 
     def returns_value(self):
         return self.returns not in (None, "void")
@@ -131,7 +146,12 @@ def load(builds):
                 fn = fns[f["mangled"]] = Fn(f)
                 fn.module = mods[f["module"]]["name"] if 0 <= f["module"] < len(mods) else "unknown"
                 order.append(fn)
+            if (fn.word_call or f["convention"] in ("cdecl16_near", "cdecl16_far")) and (
+                    fn.convention != f["convention"] or fn.params != f["params"] or
+                    fn.returns != f["returns"] or fn.return_words != f.get("return_words")):
+                raise ValueError("16-bit signature differs between builds: " + f["mangled"])
             fn.addr[bi] = f["address"]
+            fn.offset[bi] = f.get("offset", 0)
         for d in doc["data"]:
             ent = data.setdefault(d["mangled"], {"name": d["name"], "type": d["type"], "addr": {}})
             ent["addr"][bi] = d["address"]
@@ -162,7 +182,7 @@ def signature_comment(fn):
 
 
 def cparams(fn):
-    return "".join(", uint32_t %s" % n for n, _ in fn.args())
+    return "".join(", %s %s" % ("uint16_t" if fn.word_call else "uint32_t", n) for n, _ in fn.args())
 
 
 def write_if_changed(path, text):
@@ -201,6 +221,8 @@ def parse_module_file(path):
 
 
 def skeleton(fn, ns):
+    if fn.word_call:
+        return ["#error %s: supply a translated body; 16-bit CallOriginal fallback is unavailable" % fn.id]
     ret = "uint32_t" if fn.returns_value() else "void"
     names = ", ".join(n for n, _ in fn.args())
     call = "guest::orig::%s(m%s)" % (fn.id, (", " + names) if names else "")
@@ -265,7 +287,10 @@ def main():
     a = ap.parse_args()
     builds = [tuple(b.split("=", 1)) for b in a.build]
     ns = a.namespace
-    fns, data = load(builds)
+    try:
+        fns, data = load(builds)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     by_file = {}
     for fn in fns:
@@ -286,7 +311,7 @@ def main():
          "// Builds, in generator order: %s" % ", ".join("%d %s" % (i, b[0]) for i, b in enumerate(builds)),
          "void Select(int build);", "int Selected();",
          "uint32_t Fn(int id);     // linked (decompiler) address in the selected build, 0 = not in it",
-         "uint32_t Data(int id);", "", "namespace fn {", "enum : int {"]
+         "uint32_t Data(int id);", "uint16_t FnOffset(int id); // original MZ offset; preserves the code segment", "", "namespace fn {", "enum : int {"]
     h += ["    %s,   // %s" % (f.id, f.name) for f in fns]
     h += ["    kCount", "};", "}  // namespace fn", "", "namespace data {", "enum : int {"]
     h += ["    %s,   // %s" % (d["id"], d["type"] or "") for d in data]
@@ -295,6 +320,10 @@ def main():
          "namespace %s::sym {" % ns, "namespace {", "", "int selected = 0;", "",
          "const uint32_t kFn[][%d] = {" % nb]
     c += ["    {%s},   // %s" % (", ".join("0x%08x" % f.addr.get(i, 0) for i in range(nb)), f.id) for f in fns]
+    c += ["};", "", "const uint16_t kFnOffset[][%d] = {" % nb]
+    c += ["    {%s}," % ", ".join("0x%04x" % f.offset.get(i, 0) for i in range(nb)) for f in fns]
+    if not fns:
+        c.append("    {%s}," % ", ".join(["0"] * nb))
     c += ["};", "", "const uint32_t kData[][%d] = {" % nb]
     c += ["    {%s},   // %s" % (", ".join("0x%08x" % d["addr"].get(i, 0) for i in range(nb)), d["id"]) for d in data]
     c += ["    {%s}," % ", ".join(["0"] * nb)] if not data else []
@@ -302,6 +331,7 @@ def main():
           "void Select(int build) { selected = build >= 0 && build < %d ? build : 0; }" % nb,
           "int Selected() { return selected; }",
           "uint32_t Fn(int id) { return id >= 0 && id < fn::kCount ? kFn[id][selected] : 0; }",
+          "uint16_t FnOffset(int id) { return id >= 0 && id < fn::kCount ? kFnOffset[id][selected] : 0; }",
           "uint32_t Data(int id) { return id >= 0 && id < data::kCount ? kData[id][selected] : 0; }", "",
           "}  // namespace %s::sym" % ns, ""]
     write_if_changed(os.path.join(a.out, "gen/symbols.h"), "\n".join(h))
@@ -319,12 +349,26 @@ def main():
             continue
         ret = "uint32_t"
         names = ", ".join(n for n, _ in f.args())
-        gh.append("%s %s(hlekit::Machine& m%s);" % (ret, f.id, cparams(f)))
-        if f.convention == "cdecl":
+        extra = ", uint16_t dataSeg" if f.word_call else ""
+        gh.append("%s %s(hlekit::Machine& m%s%s);" % (ret, f.id, cparams(f), extra + " = 0" if extra else ""))
+        if f.word_call:
+            target = "sym::Fn(sym::fn::%s)" % f.id
+            offset = "sym::FnOffset(sym::fn::%s)" % f.id
+            if f.convention == "cdecl16_far":
+                body = ("return m.CallGuestFar16(uint16_t((m.Data(%s) - %s) >> 4), %s, dataSeg, {%s});"
+                        % (target, offset, offset, names))
+            else:
+                body = ('if (m.vm.SegBase(hlekit::Seg::Cs) + %s != m.Data(%s)) '
+                        '{ m.Stop("%s: near call requires the original code segment"); return 0; } '
+                        'return m.CallGuestNear16(%s, {%s}, dataSeg);' % (offset, target, f.id, target, names))
+        elif f.convention == "cdecl":
             body = "return m.CallGuestCdecl(m.Data(sym::Fn(sym::fn::%s)), {%s});" % (f.id, names)
         else:
             body = "return m.CallGuestWatcom(m.Data(sym::Fn(sym::fn::%s)), {%s});" % (f.id, names)
-        gc.append("%s %s(hlekit::Machine& m%s) { %s }" % (ret, f.id, cparams(f), body))
+        if f.word_call:
+            body = ('if (!%s) { m.Stop("%s: function absent from selected build"); return 0; } '
+                    % (target, f.id)) + body
+        gc.append("%s %s(hlekit::Machine& m%s%s) { %s }" % (ret, f.id, cparams(f), extra, body))
         if f.convention == "watcom":
             origs.append(f)
     gh += ["", "namespace orig {"]
@@ -350,14 +394,23 @@ def main():
         ret = "uint32_t" if f.returns_value() else "void"
         nh.append("%s %s(hlekit::Machine& m%s);   // %s" % (ret, f.id, cparams(f), rel))
         n = len(f.args())
-        args = ", ".join("m.WatcomArg(%d)" % i if f.convention == "watcom" else "m.Arg(%d)" % i for i in range(n))
+        if f.word_call:
+            frame = 4 if f.convention == "cdecl16_far" else 2
+            args = ", ".join("m.vm.Rd16(m.StackAddr(%d))" % (frame + 2 * i) for i in range(n))
+        else:
+            args = ", ".join("m.WatcomArg(%d)" % i if f.convention == "watcom" else "m.Arg(%d)" % i for i in range(n))
         call = "%s(m%s)" % (f.id, (", " + args) if args else "")
         body = "m.vm.Set(Reg::Eax, %s);" % call if ret != "void" else "%s;" % call
+        if f.word_call and ret != "void":
+            body = "const uint32_t result = %s; m.vm.Set16(Reg::Eax, uint16_t(result));" % call
+            if f.return_words == 2:
+                body += " m.vm.Set16(Reg::Edx, uint16_t(result >> 16));"
         pop = 4 * max(0, n - 4) if f.convention == "watcom" else 0
         rc.append("    if (uint32_t a = sym::Fn(sym::fn::%s))" % f.id)
         rc.append('        hlekit::Decompiled().push_back({a, "%s", "decomp/%s", "%s",' % (
             f.name, os.path.splitext(rel)[0], f.mangled.replace("\\", "\\\\").replace('"', '\\"')))
-        rc.append("            [](hlekit::Machine& m) { %s }, %d});" % (body, pop))
+        tail = ", 0, hlekit::Seam::Ret::%s" % ("Far16" if f.convention == "cdecl16_far" else "Near16") if f.word_call else ""
+        rc.append("            [](hlekit::Machine& m) { %s }, %d%s});" % (body, pop, tail))
     nh += ["", "void RegisterDecompiled();", "", "}  // namespace %s" % ns, ""]
     rc += ["}", "", "}  // namespace %s" % ns, ""]
     write_if_changed(os.path.join(a.out, "gen/natives.h"), "\n".join(nh))

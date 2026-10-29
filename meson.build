@@ -161,3 +161,7 @@ hlekit_dep = declare_dependency(
   include_directories : include_directories('include'),
   compile_args : hlekit_args,
   dependencies : [dependency('sdl2'), dependency('threads'), fluidsynth_dep])
+
+machine_call16_test = executable('machine_call16_test', 'tools/test/machine_call16.cpp',
+  dependencies : [hlekit_dep, dependency('zlib')])
+test('machine_call16', machine_call16_test, timeout : 10)

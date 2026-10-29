@@ -639,6 +639,42 @@ uint32_t Machine::CallGuestNear16(uint32_t fn, std::initializer_list<uint16_t> a
 
 uint32_t Machine::CallGuestFar16(uint16_t sel, uint16_t off, uint16_t dataSel,
                                  std::initializer_list<uint16_t> args) {
+    if (realMode) {
+        // A real-mode RETF must return to a real CS:IP trap, not the protected-mode
+        // kCodeSel descriptor used below. Keep the original code segment for near calls
+        // inside the callee; sel is its relocated segment, not a normalized far pointer.
+        const CpuState saved = vm.State();
+        const uint32_t csBase = vm.SegBase(Seg::Cs);
+        const uint32_t retLin = seamAt_ ? seamAt_ : csBase + (uint16_t)vm.Get(Reg::Eip);
+        const uint8_t orig = vm.Rd8(retLin);
+        const uint32_t prevNear = nearRet_;
+        const bool wasHoldingTasks = holdTasks_;
+        const bool wasReturned = callReturned_;
+        holdTasks_ = true;
+        if (!seamAt_) vm.Wr8(retLin, vm.Trap());
+        nearRet_ = retLin;
+        uint16_t sp = (uint16_t)vm.Get(Reg::Esp) - 64;
+        sp -= (uint16_t)(2 * args.size());
+        uint16_t at = sp;
+        const uint32_t ss = vm.SegBase(Seg::Ss);
+        for (uint16_t arg : args) { vm.Wr16(ss + at, arg); at = (uint16_t)(at + 2); }
+        sp -= 4;
+        vm.Wr16(ss + sp, (uint16_t)(retLin - csBase));
+        vm.Wr16(ss + (uint16_t)(sp + 2), vm.GetSeg(Seg::Cs));
+        SetSp(sp);
+        vm.LoadSeg(Seg::Cs, sel);
+        vm.Set(Reg::Eip, off);
+        if (dataSel) { vm.LoadSeg(Seg::Ds, dataSel); vm.LoadSeg(Seg::Es, dataSel); }
+        callReturned_ = false;
+        while (!stopping && !callReturned_) Step();
+        const uint32_t result = (uint32_t)vm.Get16(Reg::Edx) << 16 | vm.Get16(Reg::Eax);
+        vm.Restore(saved);
+        if (!seamAt_) vm.Wr8(retLin, orig);
+        nearRet_ = prevNear;
+        holdTasks_ = wasHoldingTasks;
+        callReturned_ = wasReturned;
+        return result;
+    }
     const CpuState saved = vm.State();
     const uint16_t savedCs = vm.GetSeg(Seg::Cs);
     const uint16_t savedDs = vm.GetSeg(Seg::Ds);

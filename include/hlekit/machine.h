@@ -75,8 +75,9 @@ public:
     // A far call, as `call fword ptr` (selector:offset); with `interruptFrame` the callee sees
     // EFLAGS, CS, EIP - the `pushfd; call far` idiom of interrupt chains - and returns by iretd.
     void CallGuestFar(uint16_t sel, uint32_t off, bool interruptFrame);
-    // NE far function, word arguments (first argument lowest, as `push` right to left leaves it);
-    // returns the callee's DX:AX.
+    // 16-bit far function, word arguments (first argument lowest, as `push` right to left leaves it);
+    // returns DX:AX. NE: sel/dataSel are selectors. Real mode: relocated segment values;
+    // a nonzero dataSel sets DS and ES for the call. All CPU state is restored afterwards.
     uint32_t CallGuestFar16(uint16_t sel, uint16_t off, uint16_t dataSel = 0,
                             std::initializer_list<uint16_t> args = {});
 
