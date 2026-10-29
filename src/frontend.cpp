@@ -9,6 +9,7 @@
 #include "hlekit/paths.h"
 #include "hlekit/phar286.h"
 #include "hlekit/seam.h"
+#include "host_audio.h"
 
 #include <SDL2/SDL.h>
 #include <zlib.h>
@@ -339,13 +340,15 @@ int Main(int argc, char** argv, const GameInfo& game) {
         if (f) fclose(f);
     }
     // Sound: without a sink, sound seams take the game's own "no sound" path.
-    if (!mute) m.audio = headless ? MakeClockSink() : MakeSdlSink();
-    if (!wav.empty()) m.audio = MakeWavTee(m.audio ? std::move(m.audio) : MakeClockSink(), wav);
-    if (!mute && !headless) {
-        std::string midiErr;
-        m.midi = MakeFluidSynth(soundFont, midiErr);
-        if (!m.midi) std::cerr << "note: no MIDI music (" << midiErr << ")\n";
+    if (!mute) {
+        if (headless) m.audio = MakeClockSink();
+        else {
+            auto hostAudio = MakeHostAudio(soundFont);
+            m.audio = std::move(hostAudio.samples);
+            m.midi = std::move(hostAudio.midi);
+        }
     }
+    if (!wav.empty()) m.audio = MakeWavTee(m.audio ? std::move(m.audio) : MakeClockSink(), wav);
     auto pushKey = [&](uint8_t scan, bool down, bool extended) {
         if (!game.onKey) return;
         m.Post([&game, scan, down, extended](Machine& mm) { mm.Count("key"); game.onKey(mm, scan, down, extended); });

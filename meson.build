@@ -18,6 +18,7 @@ hlekit_src = files(
   'src/ne.cpp',
   'src/phar286.cpp',
   'src/audio.cpp',
+  'src/host_audio.cpp',
   'src/midi.cpp',
   'src/frontend.cpp',
   'src/font.cpp',
@@ -132,6 +133,14 @@ if host_machine.system() == 'linux'
     include_directories : include_directories('include'),
     cpp_args : ['-DHLEKIT_HAVE_KVM', '-DHLEKIT_HAVE_JIT'])
   test('vcpu_selection', vcpu_selection_test)
+  host_audio_test = executable('host_audio_test',
+    ['tools/test/host_audio.cpp', 'src/host_audio.cpp'],
+    include_directories : include_directories('include', 'src'),
+    dependencies : [dependency('sdl2'), dependency('threads')])
+  foreach mode : ['success', 'no-midi', 'init-failure', 'init-timeout', 'open-failure',
+                  'open-timeout', 'query-timeout', 'worker-crash', 'backpressure', 'shutdown-timeout']
+    test('host_audio_' + mode, host_audio_test, args : [mode], timeout : 10)
+  endforeach
 elif host_machine.system() == 'windows'
   # hlekit_args += '-DHLEKIT_HAVE_WHPX'   # src/vcpu_whpx.cpp: the Windows bring-up
 endif
