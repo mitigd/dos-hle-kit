@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <csignal>
+#include <execinfo.h>
+#include <sys/syscall.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +49,7 @@ constexpr size_t kEipRing = 512;
 uint32_t g_eips[kEipRing];
 size_t g_eipAt = 0;
 bool g_eipLog = false;
+pid_t g_vcpuTid = 0;   // the thread inside RunOnce, to tell a guest fault from a host one
 
 class JitVcpu;
 JitVcpu* g_current = nullptr;
@@ -109,6 +112,21 @@ public:
                     fprintf(stderr, "[cpu] jit: SIGSEGV at host %p (%s %08llx), guest eip %08x\n",
                             info ? info->si_addr : nullptr, a - m < kRam ? "guest" : "outside guest RAM, offset",
                             (unsigned long long)(a - m), g_current->jit_.context.eip);
+                    // The eip below is the last guest block entered: a fault in kit code (a seam,
+                    // the DOS handler) reports it too, so say which thread faulted and where.
+                    const pid_t tid = (pid_t)syscall(SYS_gettid);
+                    const auto& st = g_current->state_;
+                    fprintf(stderr, "[cpu] jit: faulting thread %d (%s)\n", (int)tid,
+                            tid == g_vcpuTid ? "the vCPU thread, in guest or kit code" : "not the vCPU thread");
+                    fprintf(stderr, "[cpu] jit: state at the last sync: eax %08x edx %08x esp %08x eip %08x; "
+                                    "ds %04x base %08x, es %04x base %08x\n",
+                            st.reg[(int)Reg::Eax], st.reg[(int)Reg::Edx], st.reg[(int)Reg::Esp], st.reg[(int)Reg::Eip],
+                            st.seg[(int)Seg::Ds].sel, st.seg[(int)Seg::Ds].base,
+                            st.seg[(int)Seg::Es].sel, st.seg[(int)Seg::Es].base);
+                    void* frames[32];
+                    const int n = backtrace(frames, 32);
+                    fprintf(stderr, "[cpu] jit: host backtrace:\n");
+                    backtrace_symbols_fd(frames, n, fileno(stderr));
                     EipRingDump("crash");
                 }
                 _exit(3);
@@ -122,6 +140,7 @@ public:
 
     bool RunOnce(std::string& err) override {
         exit = ExitInfo{};
+        g_vcpuTid = (pid_t)syscall(SYS_gettid);
         SyncFromState();
         jit_.isRunning = true;
 
