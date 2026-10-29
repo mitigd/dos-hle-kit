@@ -127,6 +127,11 @@ cpu_deps_lib = static_library('hlekit_cpu_deps', zydis_src, asmjit_src,
 if host_machine.system() == 'linux'
   hlekit_src += files('src/vcpu_kvm.cpp')
   hlekit_args += '-DHLEKIT_HAVE_KVM'
+  vcpu_selection_test = executable('vcpu_selection_test',
+    ['tools/test/vcpu_selection.cpp', 'src/vcpu.cpp', 'src/vm.cpp'],
+    include_directories : include_directories('include'),
+    cpp_args : ['-DHLEKIT_HAVE_KVM', '-DHLEKIT_HAVE_JIT'])
+  test('vcpu_selection', vcpu_selection_test)
 elif host_machine.system() == 'windows'
   # hlekit_args += '-DHLEKIT_HAVE_WHPX'   # src/vcpu_whpx.cpp: the Windows bring-up
 endif

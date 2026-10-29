@@ -52,8 +52,6 @@ std::vector<std::string> Vcpu::Available() {
 std::string Vcpu::Default() {
 #if defined(__EMSCRIPTEN__)
     return "jit";              // no hardware virtualisation in a browser
-#elif defined(_WIN32) && defined(HLEKIT_HAVE_WHPX)
-    return "whpx";
 #elif defined(__linux__) && defined(HLEKIT_HAVE_KVM)
     return "kvm";
 #elif defined(HLEKIT_HAVE_JIT)
@@ -64,6 +62,16 @@ std::string Vcpu::Default() {
 }
 
 std::unique_ptr<Vcpu> Vcpu::Create(const std::string& name, std::string& err) {
+#if defined(__linux__) && defined(HLEKIT_HAVE_KVM) && defined(HLEKIT_HAVE_JIT)
+    if (name.empty()) {
+        std::string kvmErr;
+        if (auto cpu = CreateKvm(kvmErr)) return cpu;
+        // Initialization is the availability check: opening /dev/kvm alone is not enough.
+        auto cpu = CreateJit(err);
+        if (!cpu) err = "kvm: " + kvmErr + "; jit fallback: " + err;
+        return cpu;
+    }
+#endif
     const std::string n = Lower(name.empty() ? Default() : name);
     if (n.empty()) { err = "this kit build has no CPU backend"; return nullptr; }
 

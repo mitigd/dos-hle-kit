@@ -115,12 +115,13 @@ public:
     // a seam edited a handler): drop any cached translation of [addr, addr+len).
     virtual void Invalidate(uint32_t, uint32_t) {}
 
-    // `name`: kvm, whpx, jit or web (= jit in a browser build); empty = Default().
+    // `name`: kvm, whpx, jit or web (= jit in a browser build); empty prefers Default(),
+    // falling back to jit on Linux if kvm initialization fails. Explicit names never fall back.
     // Available() is the list this build can create. Create() returns null and sets err if it
     // cannot; the engine is initialised and ready to run when it returns non-null.
     static std::unique_ptr<Vcpu> Create(const std::string& name, std::string& err);
     static std::vector<std::string> Available();
-    static std::string Default();
+    static std::string Default();  // preferred backend; runtime initialization may fail
 };
 
 }  // namespace hlekit

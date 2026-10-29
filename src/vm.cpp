@@ -8,13 +8,14 @@ namespace hlekit {
 Vm::~Vm() = default;
 
 bool Vm::Create(std::string& err) {
-    const char* env = getenv("HLEKIT_CPU");
-    return Create(env ? env : "", err);
+    return Create("", err);
 }
 
 bool Vm::Create(const std::string& backend, std::string& err) {
     std::string name = backend;
-    if (name.empty()) name = Vcpu::Default();
+    if (name.empty()) {
+        if (const char* env = getenv("HLEKIT_CPU")) name = env;
+    }
     if (name == "web" || name == "Web") name = "jit";
     cpu_ = Vcpu::Create(name, err);
     if (!cpu_) return false;

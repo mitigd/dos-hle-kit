@@ -34,7 +34,7 @@ public:
 
     ~Vm();
 
-    // Choose the CPU engine: `backend` empty -> HLEKIT_CPU, else Vcpu::Default(). The engine is
+    // Choose the CPU engine: `backend` empty -> HLEKIT_CPU, then automatic selection. The engine is
     // created and ready when this returns true; `Backend()` names it.
     bool Create(std::string& err);
     bool Create(const std::string& backend, std::string& err);

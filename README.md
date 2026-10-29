@@ -36,7 +36,7 @@ native handlers; it does not fork the CPU, loader or frontend.
 
 ## Requirements
 
-- Linux for the KVM backend (`/dev/kvm` must be available), the current default
+- An x86-64 host; Linux prefers KVM when available and otherwise falls back to the JIT
 - A C++20 compiler and C11 compiler
 - Meson and Ninja
 - SDL2 and zlib
@@ -340,9 +340,14 @@ which engine is running.
 
 | Backend | Host | State |
 | :-- | :-- | :-- |
-| `kvm` | Linux | default; hardware-virtualised; recommended |
+| `kvm` | Linux | preferred default when available; hardware-virtualised; recommended |
 | `jit` | Linux, any x86-64 host | experimental portable engine; no debugger support yet; runs 32-bit and real-mode (MZ/COM) guests |
 | `whpx` | Windows 10+ | planned |
+
+Without an explicit CPU selection, Linux tries KVM and falls back to the JIT if KVM cannot
+initialize (for example, `/dev/kvm` is missing or inaccessible). Windows and other supported
+hosts default to the JIT. `--cpu NAME` overrides
+`HLEKIT_CPU`; explicitly selecting `kvm` reports an error if it is unavailable.
 
 ```bash
 build/mygame-hle --list-cpus
